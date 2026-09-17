@@ -20,3 +20,16 @@ class ForecastRawPayload(BaseModel):
     location_id: str
     run: datetime
     api_response: dict[str, Any]
+
+
+class DlqRecord(BaseModel):
+    """weather.dlq.v1 payload (brief section 6): the original payload, why it
+    failed, where it came from, and when."""
+
+    original_payload: str
+    error_type: str
+    error_message: str
+    source_topic: str
+    source_partition: int
+    source_offset: int
+    failed_at: datetime

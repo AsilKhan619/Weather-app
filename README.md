@@ -6,7 +6,7 @@ Runs entirely free and self-hosted: every data source (Open-Meteo, aviationweath
 
 Full requirements: [`docs/PROJECT_BRIEF.md`](docs/PROJECT_BRIEF.md). Phase-by-phase progress: [`docs/PLAN.md`](docs/PLAN.md). Design decisions: [`docs/decisions/`](docs/decisions/).
 
-**Status: Phase 0 (foundation) in progress.** The commands below reflect what actually works today; later phases will fill in `make demo`, `make backfill`, `make eval`, `make trace`, and `make replay`.
+**Status: Phase 1 (forecast ingestion) complete.** Live forecasts flow Open-Meteo → Kafka → a Parquet bronze lake and a validated, idempotent Postgres silver table today. The commands below reflect what actually works; later phases fill in `make demo`, `make backfill`, `make eval`, `make trace`, and `make replay`.
 
 ## Architecture
 
@@ -47,14 +47,17 @@ Prerequisites: [Docker Desktop](https://www.docker.com/products/docker-desktop/)
 
 ```bash
 cp .env.example .env
-make up      # starts Kafka (KRaft), Kafbat UI (localhost:8080), and Postgres
-uv sync      # installs Python dependencies
-make test    # unit tests
+uv sync --extra ingestion   # installs Python dependencies (+ pyarrow for the bronze lake)
+make up                     # starts Kafka (KRaft), Kafbat UI (localhost:8080), and Postgres
+                             # (also runs migrations and provisions topics)
+make test                   # unit tests
+make test-integration       # real Kafka + Postgres via Testcontainers
 make lint
 make typecheck
+make produce-forecasts      # runs the live forecast producer (Ctrl+C to stop)
 ```
 
-`make demo` (a short backfill + populated dashboard) and `make backfill` (full history) land in Phase 1-2. `make eval`, `make trace`, and `make replay` land in Phases 3 and 6.
+`make demo` (a short backfill + populated dashboard) and `make backfill` (full history) land in Phase 2. `make eval`, `make trace`, and `make replay` land in Phases 3 and 6.
 
 ## Tech stack
 

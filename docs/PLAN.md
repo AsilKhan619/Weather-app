@@ -32,14 +32,18 @@
 
 *Acceptance (brief §15): `make up` is healthy from a fresh clone, and `make test` and CI pass.*
 
-## Phase 1 — Forecast ingestion slice
+## Phase 1 — Forecast ingestion slice ✅
 
-- [ ] Forecast producer (5 locations × 3 models, Single Runs API)
-- [ ] Bronze sink consumer (Parquet lake)
-- [ ] Silver consumer: validation, pandas transforms, DLQ, idempotent upserts
-- [ ] `config/locations.yaml` (5 starter locations, contrasting climates)
+- [x] Forecast producer (5 locations × 3 models, Single Runs API) — `nimbus.ingestion.forecast_producer`
+- [x] Bronze sink consumer (Parquet lake) — `nimbus.streaming.bronze_sink`
+- [x] Silver consumer: validation, pandas transforms, DLQ, idempotent upserts — `nimbus.streaming.forecast_silver`
+- [x] `config/locations.yaml` (5 starter locations, contrasting climates) — done in Phase 0
+- [x] `config/models.yaml` (3 of 4 planned models for this phase)
+- [x] Idempotent Kafka topic provisioning (`nimbus.jobs.init_topics`, wired into `make up`)
+- [x] `silver.forecast` table (migration 0002)
+- [x] ADR 0002: bronze/silver design, DLQ shape, the chunked-upsert bug found via manual verification
 
-*Acceptance: forecasts queryable in silver; zero duplicates on re-run; malformed messages land in DLQ without stopping the consumer; kill/restart mid-batch loses nothing.*
+*Acceptance: forecasts queryable in silver (verified: 10,080 real rows from 15 real Open-Meteo events); zero duplicates on re-run (verified twice — automated integration test + a real-run duplicate-run edge case caught live); malformed messages land in DLQ without stopping the consumer (verified); kill/restart mid-batch loses nothing (verified via a dedicated restart-safety integration test).*
 
 ## Phase 2 — Observations and backfill
 
