@@ -36,6 +36,7 @@ The brief's default stack is confirmed current and correctly chosen. Adjustments
 | Kafbat UI | `ghcr.io/kafbat/kafka-ui` | Actively maintained community fork of the abandoned `provectus/kafka-ui` |
 | Anthropic models | `claude-sonnet-5` (agent), `claude-haiku-4-5-20251001` (briefings) | Both confirmed real, current IDs; both support prompt caching (reads at 10% of base input price, writes at ~1.25×) — used for fact-sheet-hash caching in Phase 5 |
 | Airflow | 3.3.1 when we get to Phase 7 | 3.x is a ground-up rewrite of 2.x (new UI, task SDK, split DAG processor), not a drop-in upgrade — budget extra research time; the brief's lightweight-scheduler fallback stays available |
+| pandas | `>=3.0.5,<4` | Missed in the original Phase 0 sweep (pandas wasn't in the checked package list) - caught in Phase 1 when adding it as a real dependency. 3.0 is a major version: Copy-on-Write is now the *only* mode (no opt-out), and columns of strings default to a new `str` dtype instead of `object`. Neither affects this codebase's transform functions (they set dtypes explicitly and don't rely on view/mutation semantics), but it's the reason to pin `<4` rather than leave it floating. |
 
 ## Kafka topic design
 
