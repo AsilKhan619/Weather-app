@@ -20,7 +20,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --extra ingestion
 
       - name: Lint (ruff)
         run: uv run ruff check .
@@ -46,7 +46,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --extra ingestion
 
       - name: "Integration tests (Testcontainers: Kafka + Postgres)"
         run: uv run pytest tests/integration -m integration

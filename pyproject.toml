@@ -92,6 +92,10 @@ ignore_missing_imports = true
 # __all__, which strict mode's no_implicit_reexport otherwise rejects.
 implicit_reexport = true
 
+[[tool.mypy.overrides]]
+module = ["pyarrow.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests/unit"]
 addopts = "-ra"

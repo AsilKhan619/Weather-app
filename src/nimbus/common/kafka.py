@@ -3,7 +3,7 @@ consumer-group logic for bronze/silver lives in `nimbus.streaming` (Phase 1)."""
 
 import json
 import logging
-from typing import Any
+from typing import Any, Protocol
 
 from confluent_kafka import Consumer, KafkaError, Message, Producer
 from confluent_kafka.admin import AdminClient, NewTopic
@@ -11,6 +11,22 @@ from confluent_kafka.admin import AdminClient, NewTopic
 from nimbus.common.settings import Settings
 
 logger = logging.getLogger(__name__)
+
+
+class KafkaMessageLike(Protocol):
+    """The subset of confluent_kafka.Message this project depends on.
+    confluent_kafka.Message is a C-extension type with no public
+    constructor, so streaming code is typed against this structural
+    Protocol instead - it's what makes FakeMessage-based unit tests
+    (no broker needed) type-check cleanly."""
+
+    def partition(self) -> int | None: ...
+    def offset(self) -> int | None: ...
+    def timestamp(self) -> tuple[int, int]: ...
+    def key(self) -> bytes | None: ...
+    def value(self) -> bytes | None: ...
+    def topic(self) -> str | None: ...
+
 
 _DAY_MS = 24 * 60 * 60 * 1000
 
