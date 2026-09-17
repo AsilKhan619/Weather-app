@@ -11,8 +11,8 @@ from pathlib import Path
 import pytest
 from confluent_kafka import Consumer, Producer
 from sqlalchemy import create_engine, text
-from testcontainers.kafka import KafkaContainer
-from testcontainers.postgres import PostgresContainer
+from testcontainers.community.kafka import KafkaContainer
+from testcontainers.community.postgres import PostgresContainer
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOPIC = "nimbus.smoke.test.v1"

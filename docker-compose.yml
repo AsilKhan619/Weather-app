@@ -58,7 +58,9 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-nimbus}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nimbus_dev_only}
     volumes:
-      - nimbus-postgres-data:/var/lib/postgresql/data
+      # Postgres 18+ images store data under /var/lib/postgresql/<major>/... and
+      # expect the volume mounted at the parent dir, not at .../data directly.
+      - nimbus-postgres-data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nimbus} -d ${POSTGRES_DB:-nimbus}"]
       interval: 5s

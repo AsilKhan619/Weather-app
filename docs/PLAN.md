@@ -14,21 +14,21 @@
 
 - [x] Interview user, verify external APIs/libraries against current docs (session 1)
 - [x] Approve plan, save `docs/PLAN.md`
-- [ ] Write `CLAUDE.md`
-- [ ] Git repo init + first commit
-- [ ] Repo scaffold (`src/nimbus/...`, `config/`, `dashboard/`, `migrations/`, `orchestration/airflow/`, `tests/`, `evals/`, `docs/`)
-- [ ] `uv` project (`pyproject.toml`) with pinned dependencies (SQLAlchemy 2.0.x, httpx <1.0, curated ruff ruleset — see ADR 0001)
-- [ ] `.env.example`
-- [ ] `docker-compose.yml`: Kafka (KRaft), Kafbat UI, Postgres, each with health checks
-- [ ] Alembic migration scaffold (`silver`, `gold`, `ops` schemas)
-- [ ] `Makefile`: `up`, `down`, `logs`, `demo`, `backfill`, `test`, `test-integration`, `lint`, `typecheck`, `eval`, `trace`, `replay`
-- [ ] pre-commit config (ruff, mypy)
-- [ ] GitHub Actions CI (lint, typecheck, unit test)
-- [ ] `common/settings.py` (pydantic-settings) + `common/logging.py` (structured JSON logs)
-- [ ] Smoke test: produce a Kafka message, consume it, write a row to Postgres
-- [ ] README skeleton
-- [ ] Docker Desktop + WSL2 installed by user; `make up` verified healthy
-- [ ] Phase 0 summary + talking points in `docs/interview-notes.md`
+- [x] Write `CLAUDE.md`
+- [x] Git repo init + first commit
+- [x] Repo scaffold (`src/nimbus/...`, `config/`, `dashboard/`, `migrations/`, `orchestration/airflow/`, `tests/`, `evals/`, `docs/`)
+- [x] `uv` project (`pyproject.toml`) with pinned dependencies (SQLAlchemy 2.0.x, httpx <1.0, curated ruff ruleset — see ADR 0001)
+- [x] `.env.example`
+- [x] `docker-compose.yml`: Kafka (KRaft), Kafbat UI, Postgres, each with health checks
+- [x] Alembic migration scaffold (`silver`, `gold`, `ops` schemas) — `alembic heads`/`alembic history` verified; not yet run against a live Postgres (no Docker yet)
+- [x] `Makefile`: `up`, `down`, `logs`, `demo`, `backfill`, `test`, `test-integration`, `lint`, `typecheck`, `eval`, `trace`, `replay` (`demo`/`backfill`/`eval`/`trace`/`replay` call CLI entry points that land in later phases)
+- [x] pre-commit config (ruff, mypy) — installed and run clean against all files
+- [x] GitHub Actions CI (lint, typecheck, unit test, integration test)
+- [x] `common/settings.py` (pydantic-settings) + `common/logging.py` (structured JSON logs)
+- [x] Smoke test (Testcontainers: produce a Kafka message, consume it, write a row to Postgres) — **run against real Docker, passing**
+- [x] README skeleton
+- [x] Docker Desktop installed; `make up` verified healthy (Kafka, Kafbat UI, Postgres all `healthy`); Alembic migration applied to the live DB; smoke test (`make test-integration`) run and passing
+- [x] Phase 0 summary + talking points in `docs/interview-notes.md`
 
 *Acceptance (brief §15): `make up` is healthy from a fresh clone, and `make test` and CI pass.*
 

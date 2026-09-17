@@ -49,3 +49,6 @@ Run `uv sync` once after cloning to install dependencies (uv manages the virtual
 - Pin `SQLAlchemy>=2.0,<2.1` and `httpx<1.0` — both have unreleased breaking-change versions in pre-release as of Sept 2026 (see ADR 0001).
 - ruff 0.16+ enables ~413 rules by default; `pyproject.toml` must curate `[tool.ruff.lint] select` deliberately rather than rely on defaults.
 - Open-Meteo's backfill archive uses `https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py` (not the human-facing download form) for historical METAR — see ADR 0001.
+- **Postgres 18's official image changed its volume-mount convention**: mount the volume at `/var/lib/postgresql` (parent dir), not `/var/lib/postgresql/data` — the old convention now makes the container refuse to start ("data in an unused mount/volume"). Already fixed in `docker-compose.yml`.
+- Docker Desktop's installer needs an interactive UAC click and its first run opens a window that needs a manual click-through (subscription agreement / skip sign-in) — neither can be automated from a non-interactive session.
+- `docker`/`docker compose` aren't on PATH in a fresh shell after install; full path was `C:\Users\<user>\AppData\Local\Programs\DockerDesktop\resources\bin\docker.exe` for this per-user install (add to PATH, or open a new shell after install/PATH update settles).

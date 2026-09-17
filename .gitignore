@@ -30,5 +30,5 @@ orchestration/airflow/*.db
 .DS_Store
 Thumbs.db
 
-# Claude Code (project-local settings only; keep repo-shared settings if any are added later)
-.claude/settings.local.json
+# Claude Code (session/machine-local only; keep repo-shared config if any is added later)
+.claude/
