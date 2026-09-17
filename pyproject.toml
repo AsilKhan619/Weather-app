@@ -88,6 +88,9 @@ files = ["src", "tests"]
 [[tool.mypy.overrides]]
 module = ["confluent_kafka.*"]
 ignore_missing_imports = true
+# confluent_kafka's __init__ modules re-export without `as` aliases or
+# __all__, which strict mode's no_implicit_reexport otherwise rejects.
+implicit_reexport = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests/unit"]

@@ -6,10 +6,49 @@ import logging
 from typing import Any
 
 from confluent_kafka import Consumer, KafkaError, Message, Producer
+from confluent_kafka.admin import AdminClient, NewTopic
 
 from nimbus.common.settings import Settings
 
 logger = logging.getLogger(__name__)
+
+_DAY_MS = 24 * 60 * 60 * 1000
+
+# Topic design per ADR 0001: partitions sized for a single-broker laptop
+# setup with room for parallel bronze+silver consumer groups; retention short
+# because the bronze Parquet lake, not Kafka, is the long-term replay source.
+TOPIC_SPECS: dict[str, dict[str, int]] = {
+    "weather.forecast.raw.v1": {"partitions": 6, "retention_ms": 7 * _DAY_MS},
+    "weather.observation.raw.v1": {"partitions": 6, "retention_ms": 7 * _DAY_MS},
+    "weather.dlq.v1": {"partitions": 3, "retention_ms": 30 * _DAY_MS},
+    "weather.alert.v1": {"partitions": 3, "retention_ms": 14 * _DAY_MS},
+    "weather.briefing.v1": {"partitions": 3, "retention_ms": 14 * _DAY_MS},
+}
+
+
+def ensure_topics(settings: Settings, timeout: float = 10.0) -> None:
+    """Create any of TOPIC_SPECS that don't already exist. Idempotent - safe
+    to call on every `make up`, not just once."""
+    admin = AdminClient({"bootstrap.servers": settings.kafka_bootstrap_servers})
+    existing = admin.list_topics(timeout=timeout).topics
+    missing = [name for name in TOPIC_SPECS if name not in existing]
+    if not missing:
+        logger.info("all topics already exist")
+        return
+
+    new_topics = [
+        NewTopic(
+            name,
+            num_partitions=TOPIC_SPECS[name]["partitions"],
+            replication_factor=1,
+            config={"retention.ms": str(TOPIC_SPECS[name]["retention_ms"])},
+        )
+        for name in missing
+    ]
+    futures = admin.create_topics(new_topics)
+    for name, future in futures.items():
+        future.result(timeout=timeout)
+        logger.info("created topic", extra={"topic": name})
 
 
 def make_producer(settings: Settings) -> Producer:
