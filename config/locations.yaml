@@ -1,0 +1,49 @@
+# 5 starter locations across contrasting climates (brief section 5). Picked for
+# reliable METAR coverage; expand toward ~25 in Phase 2. Phoenix deliberately
+# has a station in a non-DST-observing timezone — a real edge case the
+# transform unit tests (brief section 14) must handle correctly.
+locations:
+  - id: san-francisco
+    name: San Francisco, CA, USA
+    climate: coastal
+    latitude: 37.6213
+    longitude: -122.3790
+    elevation_m: 4
+    timezone: America/Los_Angeles
+    station: KSFO
+
+  - id: denver
+    name: Denver, CO, USA
+    climate: mountain
+    latitude: 39.8561
+    longitude: -104.6737
+    elevation_m: 1655
+    timezone: America/Denver
+    station: KDEN
+
+  - id: phoenix
+    name: Phoenix, AZ, USA
+    climate: desert
+    latitude: 33.4342
+    longitude: -112.0116
+    elevation_m: 346
+    timezone: America/Phoenix
+    station: KPHX
+
+  - id: chicago
+    name: Chicago, IL, USA
+    climate: continental
+    latitude: 41.9742
+    longitude: -87.9073
+    elevation_m: 204
+    timezone: America/Chicago
+    station: KORD
+
+  - id: singapore
+    name: Singapore
+    climate: tropical
+    latitude: 1.3644
+    longitude: 103.9915
+    elevation_m: 7
+    timezone: Asia/Singapore
+    station: WSSS

@@ -1,0 +1,94 @@
+[project]
+name = "nimbus"
+version = "0.1.0"
+description = "Streaming weather-forecast accuracy platform with grounded LLM briefings and an AI agent."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+
+# Core dependencies needed from Phase 0 onward (settings, logging, Kafka/DB
+# helpers, migrations, the smoke test). Phase-specific dependencies live in
+# [project.optional-dependencies] below and are added to the active env only
+# when that phase starts, so `uv sync` stays fast and the env stays lean.
+dependencies = [
+  "pydantic>=2.13.4,<3",
+  "pydantic-settings>=2.15.0,<3",
+  "confluent-kafka>=2.15.0,<3",
+  "psycopg[binary]>=3.3.5,<4",
+  "sqlalchemy>=2.0.52,<2.1", # 2.1 is still an RC as of Sept 2026 (see ADR 0001) — don't bump past 2.0.x until it's GA
+  "alembic>=1.18,<2",
+  "tenacity>=9.1.4,<10",
+  "httpx>=0.28.1,<1.0", # 1.0 is still pre-release as of Sept 2026 (see ADR 0001)
+]
+
+[project.optional-dependencies]
+# Phase 1: bronze Parquet lake
+ingestion = ["pyarrow>=25.0.1,<26"]
+# Phase 3: DataFrame validation
+quality = ["pandera>=0.33.1,<0.34"]
+# Phase 4: dashboard
+dashboard = ["streamlit>=1.63.0,<2"]
+# Phase 6: agent SQL guardrails
+sql = ["sqlglot>=30.17.0,<31"]
+# Phase 5/6: LLM client (pin exact version when that phase starts)
+llm = ["anthropic"]
+# Phase 7: orchestration (3.x is a rewrite of 2.x — see ADR 0001)
+orchestration = ["apache-airflow==3.3.1"]
+
+[dependency-groups]
+dev = [
+  "pytest>=9.1.1,<10",
+  "pytest-cov>=6.0,<7",
+  "testcontainers[kafka,postgres]>=4.14.2,<5",
+  "ruff>=0.16.3,<0.17",
+  "mypy>=2.3.1,<3",
+  "pre-commit>=4.6.2,<5",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nimbus"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# Deliberately curated selection (ruff 0.16+ defaults to ~413 rules; see ADR 0001).
+select = [
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # pyflakes
+  "I",   # isort
+  "UP",  # pyupgrade
+  "B",   # flake8-bugbear
+  "SIM", # flake8-simplify
+  "C4",  # flake8-comprehensions
+  "PTH", # flake8-use-pathlib
+  "RUF", # ruff-specific
+]
+ignore = []
+
+[tool.ruff.lint.isort]
+known-first-party = ["nimbus"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["confluent_kafka.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit"]
+addopts = "-ra"
+markers = ["integration: requires Docker (Testcontainers); run via `make test-integration`"]
+
+[tool.coverage.run]
+source = ["src/nimbus"]

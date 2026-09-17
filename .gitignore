@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# uv
+uv.lock.bak
+
+# Env / secrets
+.env
+!.env.example
+
+# Data
+data/lake/
+*.parquet
+
+# Airflow
+orchestration/airflow/logs/
+orchestration/airflow/*.db
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Claude Code (project-local settings only; keep repo-shared settings if any are added later)
+.claude/settings.local.json
