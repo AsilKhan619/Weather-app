@@ -1,0 +1,28 @@
+# Open-Meteo model identifiers (confirmed against live API responses, ADR 0001).
+# Phase 1 ships 3 of the 4 planned models; gem_seamless (Environment Canada GEM)
+# joins when the model set expands (brief section 5 targets 4-5 global models).
+models:
+  - id: ecmwf_ifs025
+    name: ECMWF IFS
+  - id: gfs_seamless
+    name: NOAA GFS
+  - id: icon_seamless
+    name: DWD ICON
+
+# Run cadence assumed for the backwards-scan run-detection heuristic (ADR 0001).
+# All three confirmed models publish on this cadence; verified per-model
+# availability varies (ICON's later hours can lag), which is exactly why the
+# scanner tries several candidates rather than assuming the newest always works.
+run_cadence_hours: 6
+run_lookback_steps: 8
+
+# Hourly variables requested (brief section 5): 2m temperature, dew point,
+# 10m wind speed, mean sea-level pressure. Units as returned by the API (not
+# SI) - see ADR 0001; silver converts to SI.
+variables:
+  - temperature_2m
+  - dew_point_2m
+  - wind_speed_10m
+  - pressure_msl
+
+forecast_days: 7
