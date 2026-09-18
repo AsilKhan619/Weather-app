@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -17,9 +18,11 @@ from nimbus.common.settings import Settings
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+Stack = tuple[Settings, KafkaContainer, PostgresContainer]
 
-@pytest.fixture
-def stack() -> Iterator[tuple[Settings, KafkaContainer, PostgresContainer]]:
+
+@contextmanager
+def _running_stack() -> Iterator[Stack]:
     with PostgresContainer("postgres:18.6-alpine") as pg, KafkaContainer() as kafka:
         pg_env = {
             **os.environ,
@@ -46,3 +49,18 @@ def stack() -> Iterator[tuple[Settings, KafkaContainer, PostgresContainer]]:
         )
         ensure_topics(settings)
         yield settings, kafka, pg
+
+
+@pytest.fixture
+def stack() -> Iterator[Stack]:
+    """A fresh stack per test - full isolation."""
+    with _running_stack() as running:
+        yield running
+
+
+@pytest.fixture(scope="module")
+def module_stack() -> Iterator[Stack]:
+    """One stack shared by a whole module, for scenarios that are expensive to
+    load. Tests using it must leave the data in a consistent state."""
+    with _running_stack() as running:
+        yield running
