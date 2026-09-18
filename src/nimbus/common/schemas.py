@@ -22,6 +22,18 @@ class ForecastRawPayload(BaseModel):
     api_response: dict[str, Any]
 
 
+class ObservationRawPayload(BaseModel):
+    """One station's raw aviationweather.gov METAR report, tagged with the
+    identifiers needed downstream. Mirrors the API response with minimal
+    changes (brief section 6) - `api_response` is the JSON object close to
+    verbatim; unit conversion and METAR-text parsing (COR flag) happen in
+    `nimbus.transform.observation`, not here."""
+
+    station: str
+    observed_at: datetime
+    api_response: dict[str, Any]
+
+
 class DlqRecord(BaseModel):
     """weather.dlq.v1 payload (brief section 6): the original payload, why it
     failed, where it came from, and when."""

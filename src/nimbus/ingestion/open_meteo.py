@@ -6,7 +6,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
-from tenacity import retry, retry_if_exception, stop_after_attempt, wait_random_exponential
+
+from nimbus.common.http import with_http_retry
 
 SINGLE_RUNS_URL = "https://single-runs-api.open-meteo.com/v1/forecast"
 
@@ -15,20 +16,7 @@ class RunNotAvailableError(Exception):
     """No run within the configured lookback window is available from Open-Meteo."""
 
 
-def _is_retryable(exc: BaseException) -> bool:
-    if isinstance(exc, httpx.TransportError):
-        return True
-    if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code == 429 or exc.response.status_code >= 500
-    return False
-
-
-@retry(
-    reraise=True,
-    stop=stop_after_attempt(3),
-    wait=wait_random_exponential(multiplier=1, max=10),
-    retry=retry_if_exception(_is_retryable),
-)
+@with_http_retry
 def _get(client: httpx.Client, params: dict[str, Any]) -> Any:
     response = client.get(SINGLE_RUNS_URL, params=params)
     # Open-Meteo uses HTTP 400 for "this run isn't available" - a normal,
