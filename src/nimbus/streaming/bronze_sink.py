@@ -52,7 +52,7 @@ def write_batch_to_parquet(
 def main(topics: list[str] | None = None) -> None:
     settings = get_settings()
     configure_logging(settings.log_level)
-    topics = topics or ["weather.forecast.raw.v1"]
+    topics = topics or ["weather.forecast.raw.v1", "weather.observation.raw.v1"]
     consumer = make_consumer(settings, group_id="bronze-sink")
 
     def handle_batch(messages: Sequence[KafkaMessageLike]) -> None:

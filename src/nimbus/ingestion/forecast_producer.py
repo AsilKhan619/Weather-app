@@ -3,23 +3,21 @@
 per model and produces one idempotent event per (model, location)."""
 
 import logging
-import signal
 import time
 from datetime import UTC, datetime
-from types import FrameType
 
 import httpx
 from confluent_kafka import Producer
-from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from nimbus.common.config import Location, ModelsConfig, load_locations, load_models_config
-from nimbus.common.db import make_engine
+from nimbus.common.db import make_engine, record_ingestion_run
 from nimbus.common.events import EventEnvelope, compute_event_id
 from nimbus.common.kafka import make_producer, produce_json
 from nimbus.common.logging import configure_logging
 from nimbus.common.schemas import ForecastRawPayload
 from nimbus.common.settings import get_settings
+from nimbus.common.shutdown import GracefulShutdown
 from nimbus.ingestion.open_meteo import fetch_forecast_run, find_latest_available_run
 
 logger = logging.getLogger(__name__)
@@ -89,30 +87,8 @@ def produce_one_poll_cycle(
             produced += 1
 
     producer.flush(10)
-    _record_ingestion_run(engine, started_at, produced, failed)
+    record_ingestion_run(engine, "forecast_producer", "live", started_at, produced, failed)
     return produced
-
-
-def _record_ingestion_run(engine: Engine, started_at: datetime, produced: int, failed: int) -> None:
-    status = "success" if failed == 0 else "failed"
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                "INSERT INTO ops.ingestion_runs "
-                "(source, ingestion_mode, status, started_at, finished_at, "
-                "messages_produced, messages_failed) "
-                "VALUES (:source, :mode, :status, :started_at, :finished_at, :produced, :failed)"
-            ),
-            {
-                "source": "forecast_producer",
-                "mode": "live",
-                "status": status,
-                "started_at": started_at,
-                "finished_at": datetime.now(UTC),
-                "produced": produced,
-                "failed": failed,
-            },
-        )
 
 
 def main() -> None:
@@ -122,25 +98,16 @@ def main() -> None:
     models = load_models_config()
     engine = make_engine(settings)
     producer = make_producer(settings)
-
-    shutdown = False
-
-    def handle_signal(signum: int, frame: FrameType | None) -> None:
-        nonlocal shutdown
-        logger.info("shutdown signal received", extra={"signal": signum})
-        shutdown = True
-
-    signal.signal(signal.SIGTERM, handle_signal)
-    signal.signal(signal.SIGINT, handle_signal)
+    shutdown = GracefulShutdown()
 
     with httpx.Client(timeout=30.0) as client:
-        while not shutdown:
+        while not shutdown.should_stop:
             try:
                 produce_one_poll_cycle(client, producer, engine, locations, models)
             except Exception:
                 logger.exception("poll cycle failed")
             for _ in range(POLL_INTERVAL_SECONDS):
-                if shutdown:
+                if shutdown.should_stop:
                     break
                 time.sleep(1)
 

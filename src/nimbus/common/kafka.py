@@ -3,14 +3,18 @@ consumer-group logic for bronze/silver lives in `nimbus.streaming` (Phase 1)."""
 
 import json
 import logging
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from confluent_kafka import Consumer, KafkaError, Message, Producer
 from confluent_kafka.admin import AdminClient, NewTopic
 
+from nimbus.common.schemas import DlqRecord
 from nimbus.common.settings import Settings
 
 logger = logging.getLogger(__name__)
+
+DLQ_TOPIC = "weather.dlq.v1"
 
 
 class KafkaMessageLike(Protocol):
@@ -110,3 +114,26 @@ def produce_json(producer: Producer, topic: str, key: str, value: dict[str, Any]
         callback=delivery_callback,
     )
     producer.poll(0)
+
+
+def send_to_dlq(
+    producer: Producer, msg: KafkaMessageLike, error: Exception, source_topic: str
+) -> None:
+    """Route one poison message to weather.dlq.v1 (brief section 6): the
+    original payload, why it failed, and where it came from. Shared by every
+    silver consumer so a malformed message never blocks its partition."""
+    raw_value = msg.value() or b""
+    record = DlqRecord(
+        original_payload=raw_value.decode("utf-8", errors="replace"),
+        error_type=type(error).__name__,
+        error_message=str(error),
+        source_topic=msg.topic() or source_topic,
+        source_partition=msg.partition() or 0,
+        source_offset=msg.offset() or 0,
+        failed_at=datetime.now(UTC),
+    )
+    produce_json(producer, DLQ_TOPIC, key=record.source_topic, value=record.model_dump(mode="json"))
+    logger.warning(
+        "routed message to DLQ",
+        extra={"error_type": record.error_type, "error_message": record.error_message},
+    )

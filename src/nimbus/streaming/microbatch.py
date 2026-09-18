@@ -6,32 +6,19 @@ project makes (bronze files, silver upserts) is idempotent. Shared by the
 bronze sink and silver consumers so both get identical batching semantics."""
 
 import logging
-import signal
 import time
 from collections.abc import Callable, Sequence
-from types import FrameType
 
 from confluent_kafka import Consumer, KafkaError
 
 from nimbus.common.kafka import KafkaMessageLike
+from nimbus.common.shutdown import GracefulShutdown
+
+__all__ = ["GracefulShutdown", "run_microbatch_loop"]
 
 logger = logging.getLogger(__name__)
 
 BatchHandler = Callable[[Sequence[KafkaMessageLike]], None]
-
-
-class GracefulShutdown:
-    """Flips `should_stop` on SIGTERM/SIGINT so a running batch loop can exit
-    cleanly between batches instead of being killed mid-write."""
-
-    def __init__(self) -> None:
-        self.should_stop = False
-        signal.signal(signal.SIGTERM, self._handle)
-        signal.signal(signal.SIGINT, self._handle)
-
-    def _handle(self, signum: int, frame: FrameType | None) -> None:
-        logger.info("shutdown signal received", extra={"signal": signum})
-        self.should_stop = True
 
 
 def run_microbatch_loop(

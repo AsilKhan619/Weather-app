@@ -21,3 +21,18 @@ forecast_table = sa.Table(
     sa.Column("inserted_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     schema="silver",
 )
+
+observation_table = sa.Table(
+    "observation",
+    metadata,
+    sa.Column("station", sa.Text, primary_key=True),
+    sa.Column("observed_at", sa.DateTime(timezone=True), primary_key=True),
+    sa.Column("variable", sa.Text, primary_key=True),
+    sa.Column("value", sa.Float),
+    sa.Column("raw_text", sa.Text, nullable=False),
+    sa.Column("is_corrected", sa.Boolean, nullable=False),
+    sa.Column("ingestion_mode", sa.Text, nullable=False),
+    sa.Column("source_event_id", sa.Text, nullable=False),
+    sa.Column("inserted_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+    schema="silver",
+)

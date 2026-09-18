@@ -1,7 +1,8 @@
-"""Silver consumer for forecasts (brief sections 6-8): validate -> transform
--> idempotent upsert. A message that fails validation or transformation goes
-to weather.dlq.v1 with the reason and never blocks the partition - the rest
-of the batch still gets written."""
+"""Silver consumer for observations (brief sections 6-8): validate ->
+transform -> idempotent upsert. A corrected (COR) report for the same
+(station, observed_at, variable) simply overwrites the earlier row - the
+natural key never includes raw_text, so "keep the latest version of
+corrected reports" falls out of the upsert for free."""
 
 import logging
 from collections.abc import Sequence
@@ -15,31 +16,28 @@ from nimbus.common.db import chunked_upsert, make_engine
 from nimbus.common.events import EventEnvelope
 from nimbus.common.kafka import KafkaMessageLike, make_consumer, make_producer, send_to_dlq
 from nimbus.common.logging import configure_logging
-from nimbus.common.schemas import ForecastRawPayload
+from nimbus.common.schemas import ObservationRawPayload
 from nimbus.common.settings import get_settings
-from nimbus.common.tables import forecast_table
+from nimbus.common.tables import observation_table
 from nimbus.streaming.microbatch import run_microbatch_loop
-from nimbus.transform.forecast import explode_forecast_payload
+from nimbus.transform.observation import explode_observation_payload
 
 logger = logging.getLogger(__name__)
 
-SOURCE_TOPIC = "weather.forecast.raw.v1"
+SOURCE_TOPIC = "weather.observation.raw.v1"
 DLQ_TOPIC = "weather.dlq.v1"
-CONSUMER_GROUP = "silver-forecast"
+CONSUMER_GROUP = "silver-observation"
 
-_STRING_COLUMNS = ["model", "location_id", "variable", "ingestion_mode", "source_event_id"]
-_CONFLICT_COLUMNS = ["model", "location_id", "init_time", "valid_time", "variable"]
-_UPDATE_COLUMNS = ["value", "lead_hours", "ingestion_mode", "source_event_id"]
+_STRING_COLUMNS = ["station", "variable", "ingestion_mode", "source_event_id"]
+_CONFLICT_COLUMNS = ["station", "observed_at", "variable"]
+_UPDATE_COLUMNS = ["value", "raw_text", "is_corrected", "ingestion_mode", "source_event_id"]
 
 
-def upsert_forecast_rows(engine: Engine, rows: pd.DataFrame) -> None:
-    """Insert-or-update on the natural key (brief section 7) - re-processing
-    the same event always produces the same rows, so this is safe to run
-    twice with identical input."""
+def upsert_observation_rows(engine: Engine, rows: pd.DataFrame) -> None:
     if rows.empty:
         return
     records = rows.astype(dict.fromkeys(_STRING_COLUMNS, "string")).to_dict("records")
-    chunked_upsert(engine, forecast_table, _CONFLICT_COLUMNS, _UPDATE_COLUMNS, records)
+    chunked_upsert(engine, observation_table, _CONFLICT_COLUMNS, _UPDATE_COLUMNS, records)
 
 
 def process_batch(
@@ -51,15 +49,15 @@ def process_batch(
             raw_value = msg.value()
             if raw_value is None:
                 raise ValueError("message has no value")
-            envelope = EventEnvelope[ForecastRawPayload].model_validate_json(raw_value)
-            df = explode_forecast_payload(envelope.payload, envelope.ingestion_mode)
+            envelope = EventEnvelope[ObservationRawPayload].model_validate_json(raw_value)
+            df = explode_observation_payload(envelope.payload, envelope.ingestion_mode)
             df["source_event_id"] = envelope.event_id
             frames.append(df)
         except (ValidationError, ValueError, KeyError, TypeError) as exc:
             send_to_dlq(dlq_producer, msg, exc, SOURCE_TOPIC)
 
     if frames:
-        upsert_forecast_rows(engine, pd.concat(frames, ignore_index=True))
+        upsert_observation_rows(engine, pd.concat(frames, ignore_index=True))
     dlq_producer.flush(10)
 
 
