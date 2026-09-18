@@ -1,10 +1,14 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pandas as pd
 import pytest
 
-from nimbus.common.schemas import ForecastRawPayload
-from nimbus.transform.forecast import explode_forecast_payload
+from nimbus.common.schemas import ForecastBackfillRawPayload, ForecastRawPayload
+from nimbus.transform.forecast import (
+    FORECAST_COLUMNS,
+    explode_forecast_payload,
+    explode_previous_runs_payload,
+)
 
 
 def _payload(hourly: dict[str, list[object]]) -> ForecastRawPayload:
@@ -104,3 +108,82 @@ def test_malformed_payload_missing_hourly_key_raises() -> None:
     )
     with pytest.raises(KeyError):
         explode_forecast_payload(payload, "live")
+
+
+def _backfill_payload(hourly: dict[str, list[object]]) -> ForecastBackfillRawPayload:
+    return ForecastBackfillRawPayload(
+        model="gfs_seamless",
+        location_id="san-francisco",
+        start_date=date(2024, 6, 1),
+        end_date=date(2024, 6, 1),
+        api_response={"latitude": 37.6, "longitude": -122.4, "hourly": hourly},
+    )
+
+
+def test_backfill_derives_init_time_and_lead_hours_from_the_offset() -> None:
+    payload = _backfill_payload(
+        {
+            "time": ["2024-06-01T12:00", "2024-06-01T13:00"],
+            "temperature_2m_previous_day1": [20.0, 21.0],
+            "temperature_2m_previous_day3": [19.0, 18.0],
+        }
+    )
+    df = explode_previous_runs_payload(payload)
+
+    assert len(df) == 4  # 2 hours x 2 lead offsets
+    day3 = df[df["lead_hours"] == 72].sort_values("valid_time")
+    assert list(day3["init_time"]) == [
+        pd.Timestamp("2024-05-29T12:00", tz="UTC"),
+        pd.Timestamp("2024-05-29T13:00", tz="UTC"),
+    ]
+    assert set(df["variable"]) == {"temperature_2m"}
+    assert (df["ingestion_mode"] == "backfill").all()
+
+
+def test_backfill_uses_same_columns_and_si_units_as_live() -> None:
+    payload = _backfill_payload(
+        {
+            "time": ["2024-06-01T12:00"],
+            "wind_speed_10m_previous_day1": [36.0],  # km/h
+            "pressure_msl_previous_day2": [1013.25],  # hPa
+        }
+    )
+    df = explode_previous_runs_payload(payload)
+
+    assert list(df.columns) == FORECAST_COLUMNS
+    by_var = df.set_index("variable")["value"]
+    assert by_var["wind_speed_10m"] == pytest.approx(10.0)
+    assert by_var["pressure_msl"] == pytest.approx(101325.0)
+
+
+def test_backfill_missing_values_become_nan_not_dropped() -> None:
+    payload = _backfill_payload(
+        {
+            "time": ["2024-06-01T12:00", "2024-06-01T13:00"],
+            "temperature_2m_previous_day1": [None, 21.0],
+        }
+    )
+    df = explode_previous_runs_payload(payload)
+
+    assert len(df) == 2
+    assert df["value"].isna().sum() == 1
+
+
+def test_backfill_ignores_non_previous_day_columns() -> None:
+    payload = _backfill_payload(
+        {
+            "time": ["2024-06-01T12:00"],
+            "temperature_2m": [99.0],  # not a *_previous_dayN column
+            "temperature_2m_previous_day1": [20.0],
+        }
+    )
+    df = explode_previous_runs_payload(payload)
+
+    assert len(df) == 1
+    assert df["value"].iloc[0] == pytest.approx(293.15)
+
+
+def test_backfill_payload_without_previous_day_columns_raises() -> None:
+    payload = _backfill_payload({"time": ["2024-06-01T12:00"], "temperature_2m": [20.0]})
+    with pytest.raises(KeyError):
+        explode_previous_runs_payload(payload)

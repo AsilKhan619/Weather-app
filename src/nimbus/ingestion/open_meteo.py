@@ -2,7 +2,7 @@
 5 / ADR 0001). No API key, batches every location into one request per model
 per confirmed run, and never guesses at run availability — it asks the API."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -10,6 +10,7 @@ import httpx
 from nimbus.common.http import with_http_retry
 
 SINGLE_RUNS_URL = "https://single-runs-api.open-meteo.com/v1/forecast"
+PREVIOUS_RUNS_URL = "https://previous-runs-api.open-meteo.com/v1/forecast"
 
 
 class RunNotAvailableError(Exception):
@@ -17,8 +18,8 @@ class RunNotAvailableError(Exception):
 
 
 @with_http_retry
-def _get(client: httpx.Client, params: dict[str, Any]) -> Any:
-    response = client.get(SINGLE_RUNS_URL, params=params)
+def _get(client: httpx.Client, params: dict[str, Any], url: str = SINGLE_RUNS_URL) -> Any:
+    response = client.get(url, params=params)
     # Open-Meteo uses HTTP 400 for "this run isn't available" - a normal,
     # expected outcome here, not a request bug - so don't raise for it.
     if response.status_code not in (200, 400):
@@ -93,5 +94,38 @@ def fetch_forecast_run(
             "timezone": "UTC",
         },
     )
+    result_list: list[dict[str, Any]] = result if isinstance(result, list) else [result]
+    return result_list
+
+
+def fetch_previous_runs(
+    client: httpx.Client,
+    model: str,
+    locations: list[tuple[float, float]],
+    variables: list[str],
+    lead_days: list[int],
+    start_date: date,
+    end_date: date,
+) -> list[dict[str, Any]]:
+    """Backfill: fixed lead-time offsets (`<var>_previous_dayN`) for a date range,
+    every location in one batched call. Unlike the Single Runs API a 400 here is
+    a genuine request error, never "not available yet", so it raises."""
+    hourly = [f"{var}_previous_day{n}" for var in variables for n in lead_days]
+    result = _get(
+        client,
+        {
+            "latitude": ",".join(str(lat) for lat, _ in locations),
+            "longitude": ",".join(str(lon) for _, lon in locations),
+            "models": model,
+            "hourly": ",".join(hourly),
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "timeformat": "iso8601",
+            "timezone": "UTC",
+        },
+        PREVIOUS_RUNS_URL,
+    )
+    if isinstance(result, dict) and result.get("error"):
+        raise ValueError(f"Previous Runs API error: {result.get('reason')}")
     result_list: list[dict[str, Any]] = result if isinstance(result, list) else [result]
     return result_list

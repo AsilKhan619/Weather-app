@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
 
+import pandas as pd
 from sqlalchemy import Engine, Table, create_engine, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, sessionmaker
@@ -95,3 +96,12 @@ def session_scope(session_factory: sessionmaker[Session]) -> Iterator[Session]:
         raise
     finally:
         session.close()
+
+
+def dedupe_on_key(rows: pd.DataFrame, key_columns: Sequence[str]) -> pd.DataFrame:
+    """Keep the last row per natural key. Postgres rejects an INSERT ... ON
+    CONFLICT DO UPDATE that would touch the same row twice in one statement
+    ("cannot affect row a second time"), which a batch containing both an
+    original report and its correction - or two overlapping backfill windows -
+    would otherwise trigger. Last-wins matches arrival order."""
+    return rows.drop_duplicates(subset=list(key_columns), keep="last")

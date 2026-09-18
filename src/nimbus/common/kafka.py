@@ -107,12 +107,22 @@ def delivery_callback(err: KafkaError | None, msg: Message) -> None:
 
 
 def produce_json(producer: Producer, topic: str, key: str, value: dict[str, Any]) -> None:
-    producer.produce(
-        topic=topic,
-        key=key.encode("utf-8"),
-        value=json.dumps(value, default=str).encode("utf-8"),
-        callback=delivery_callback,
-    )
+    """Produce one JSON message. A bulk backfill can outrun the broker and fill
+    librdkafka's local queue (BufferError); back off by serving delivery
+    callbacks until there's room instead of dropping or crashing."""
+    payload = json.dumps(value, default=str).encode("utf-8")
+    while True:
+        try:
+            producer.produce(
+                topic=topic,
+                key=key.encode("utf-8"),
+                value=payload,
+                callback=delivery_callback,
+            )
+            break
+        except BufferError:
+            logger.warning("producer queue full, waiting for deliveries")
+            producer.poll(1.0)
     producer.poll(0)
 
 

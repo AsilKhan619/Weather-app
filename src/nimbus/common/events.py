@@ -9,6 +9,10 @@ from pydantic import BaseModel
 
 IngestionMode = Literal["live", "backfill"]
 
+FORECAST_EVENT_TYPE = "forecast.raw"
+FORECAST_BACKFILL_EVENT_TYPE = "forecast.backfill.raw"
+OBSERVATION_EVENT_TYPE = "observation.raw"
+
 
 class EventEnvelope[PayloadT](BaseModel):
     event_id: str

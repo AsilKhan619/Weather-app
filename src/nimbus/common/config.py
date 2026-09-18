@@ -30,6 +30,7 @@ class ModelsConfig(BaseModel):
     run_lookback_steps: int
     variables: list[str]
     forecast_days: int
+    backfill_lead_days: list[int] = [1, 2, 3, 4, 5, 6, 7]
 
 
 def load_locations(path: Path = CONFIG_DIR / "locations.yaml") -> list[Location]:

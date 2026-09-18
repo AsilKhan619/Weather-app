@@ -8,18 +8,18 @@ from collections.abc import Sequence
 
 import pandas as pd
 from confluent_kafka import Producer
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from sqlalchemy.engine import Engine
 
-from nimbus.common.db import chunked_upsert, make_engine
-from nimbus.common.events import EventEnvelope
+from nimbus.common.db import chunked_upsert, dedupe_on_key, make_engine
+from nimbus.common.events import FORECAST_BACKFILL_EVENT_TYPE, EventEnvelope
 from nimbus.common.kafka import KafkaMessageLike, make_consumer, make_producer, send_to_dlq
 from nimbus.common.logging import configure_logging
-from nimbus.common.schemas import ForecastRawPayload
+from nimbus.common.schemas import ForecastBackfillRawPayload, ForecastRawPayload
 from nimbus.common.settings import get_settings
 from nimbus.common.tables import forecast_table
 from nimbus.streaming.microbatch import run_microbatch_loop
-from nimbus.transform.forecast import explode_forecast_payload
+from nimbus.transform.forecast import explode_forecast_payload, explode_previous_runs_payload
 
 logger = logging.getLogger(__name__)
 
@@ -32,12 +32,33 @@ _CONFLICT_COLUMNS = ["model", "location_id", "init_time", "valid_time", "variabl
 _UPDATE_COLUMNS = ["value", "lead_hours", "ingestion_mode", "source_event_id"]
 
 
+class _EventTypeProbe(BaseModel):
+    event_type: str
+
+
+def message_to_frame(raw_value: bytes) -> pd.DataFrame:
+    """Validate one raw message and explode it. Live runs and Previous-Runs
+    backfill chunks share this topic and table; `event_type` picks the transform
+    (both emit identical columns)."""
+    event_type = _EventTypeProbe.model_validate_json(raw_value).event_type
+    if event_type == FORECAST_BACKFILL_EVENT_TYPE:
+        backfill = EventEnvelope[ForecastBackfillRawPayload].model_validate_json(raw_value)
+        frame = explode_previous_runs_payload(backfill.payload)
+        frame["source_event_id"] = backfill.event_id
+        return frame
+    live = EventEnvelope[ForecastRawPayload].model_validate_json(raw_value)
+    frame = explode_forecast_payload(live.payload, live.ingestion_mode)
+    frame["source_event_id"] = live.event_id
+    return frame
+
+
 def upsert_forecast_rows(engine: Engine, rows: pd.DataFrame) -> None:
     """Insert-or-update on the natural key (brief section 7) - re-processing
     the same event always produces the same rows, so this is safe to run
     twice with identical input."""
     if rows.empty:
         return
+    rows = dedupe_on_key(rows, _CONFLICT_COLUMNS)
     records = rows.astype(dict.fromkeys(_STRING_COLUMNS, "string")).to_dict("records")
     chunked_upsert(engine, forecast_table, _CONFLICT_COLUMNS, _UPDATE_COLUMNS, records)
 
@@ -51,10 +72,7 @@ def process_batch(
             raw_value = msg.value()
             if raw_value is None:
                 raise ValueError("message has no value")
-            envelope = EventEnvelope[ForecastRawPayload].model_validate_json(raw_value)
-            df = explode_forecast_payload(envelope.payload, envelope.ingestion_mode)
-            df["source_event_id"] = envelope.event_id
-            frames.append(df)
+            frames.append(message_to_frame(raw_value))
         except (ValidationError, ValueError, KeyError, TypeError) as exc:
             send_to_dlq(dlq_producer, msg, exc, SOURCE_TOPIC)
 

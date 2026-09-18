@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import httpx
 import pytest
@@ -7,6 +7,7 @@ import pytest
 from nimbus.ingestion.open_meteo import (
     RunNotAvailableError,
     fetch_forecast_run,
+    fetch_previous_runs,
     find_latest_available_run,
 )
 
@@ -100,3 +101,42 @@ def test_fetch_forecast_run_wraps_single_location_dict_in_list() -> None:
         )
 
     assert result == [{"latitude": 37.6}]
+
+
+def test_fetch_previous_runs_requests_every_variable_lead_combination() -> None:
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(request.url.params)
+        captured["host"] = request.url.host
+        return httpx.Response(200, json=[{"hourly": {}}, {"hourly": {}}])
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result = fetch_previous_runs(
+            client,
+            "gfs_seamless",
+            [(37.6213, -122.379), (39.8561, -104.6737)],
+            ["temperature_2m", "wind_speed_10m"],
+            [1, 3],
+            date(2024, 6, 1),
+            date(2024, 6, 30),
+        )
+
+    assert len(result) == 2
+    assert captured["host"] == "previous-runs-api.open-meteo.com"
+    assert captured["hourly"] == (
+        "temperature_2m_previous_day1,temperature_2m_previous_day3,"
+        "wind_speed_10m_previous_day1,wind_speed_10m_previous_day3"
+    )
+    assert captured["start_date"] == "2024-06-01"
+    assert captured["end_date"] == "2024-06-30"
+
+
+def test_fetch_previous_runs_raises_on_an_api_error_body() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": True, "reason": "bad variable"})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client, pytest.raises(ValueError):
+        fetch_previous_runs(
+            client, "gfs_seamless", [(1.0, 2.0)], ["nope"], [1], date(2024, 6, 1), date(2024, 6, 2)
+        )
