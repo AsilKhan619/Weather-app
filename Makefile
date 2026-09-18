@@ -1,4 +1,4 @@
-.PHONY: up down logs demo backfill test test-integration lint typecheck eval trace replay sync migrate init-topics produce-forecasts
+.PHONY: up down logs demo backfill drain reconcile test test-integration lint typecheck eval trace replay sync migrate init-topics produce-forecasts produce-observations
 
 sync:
 	uv sync --all-extras
@@ -19,18 +19,34 @@ init-topics:
 produce-forecasts:
 	uv run python -m nimbus.ingestion.forecast_producer
 
+produce-observations:
+	uv run python -m nimbus.ingestion.observation_producer
+
 down:
 	docker compose down
 
 logs:
 	docker compose logs -f
 
+drain:
+	uv run python -m nimbus.streaming.bronze_sink --drain
+	uv run python -m nimbus.streaming.forecast_silver --drain
+	uv run python -m nimbus.streaming.observation_silver --drain
+
+reconcile:
+	uv run python -m nimbus.jobs.reconcile
+
 demo:
 	uv run python -m nimbus.jobs.backfill --days 30
-	@echo "Demo data loaded. Run 'uv run streamlit run dashboard/app.py' to view it."
+	$(MAKE) drain
+	$(MAKE) reconcile
+	@echo "Demo data loaded into bronze and silver. Query it with:"
+	@echo "  docker exec nimbus-postgres psql -U nimbus -d nimbus -c 'select count(*) from silver.forecast'"
 
 backfill:
 	uv run python -m nimbus.jobs.backfill --full
+	$(MAKE) drain
+	$(MAKE) reconcile
 
 test:
 	uv run pytest tests/unit

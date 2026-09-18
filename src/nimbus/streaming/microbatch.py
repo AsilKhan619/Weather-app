@@ -9,12 +9,12 @@ import logging
 import time
 from collections.abc import Callable, Sequence
 
-from confluent_kafka import Consumer, KafkaError
+from confluent_kafka import OFFSET_INVALID, Consumer, KafkaError, KafkaException
 
 from nimbus.common.kafka import KafkaMessageLike
 from nimbus.common.shutdown import GracefulShutdown
 
-__all__ = ["GracefulShutdown", "run_microbatch_loop"]
+__all__ = ["GracefulShutdown", "is_caught_up", "run_microbatch_loop"]
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,12 @@ def run_microbatch_loop(
     max_batch_size: int = 500,
     max_batch_seconds: float = 5.0,
     shutdown: GracefulShutdown | None = None,
+    drain: bool = False,
 ) -> None:
+    """With `drain=True` the loop exits once the consumer has caught up to the
+    end of every assigned partition - for `make demo` and replays, which need a
+    consumer that finishes rather than runs forever. Long-running services leave
+    it False."""
     consumer.subscribe(topics)
     shutdown = shutdown or GracefulShutdown()
 
@@ -37,11 +42,43 @@ def run_microbatch_loop(
         while not shutdown.should_stop:
             batch = _collect_batch(consumer, max_batch_size, max_batch_seconds, shutdown)
             if not batch:
+                if drain and is_caught_up(consumer):
+                    logger.info("drained: caught up to the end of every assigned partition")
+                    break
                 continue
             handle_batch(batch)
             consumer.commit(asynchronous=False)
     finally:
         consumer.close()
+
+
+def is_caught_up(consumer: Consumer) -> bool:
+    """True once the consumer's position has reached the high watermark of every
+    assigned partition. Deliberately lag-based rather than "no message for N
+    seconds": a fresh consumer group can wait many seconds for its first
+    partition assignment, and an idle timeout would mistake that for "done"."""
+    assignment = consumer.assignment()
+    if not assignment:
+        return False  # not assigned yet (still rebalancing) - can't be caught up
+    try:
+        committed = {
+            (tp.topic, tp.partition): tp.offset
+            for tp in consumer.committed(assignment, timeout=5.0)
+        }
+        for position in consumer.position(assignment):
+            low, high = consumer.get_watermark_offsets(position, timeout=5.0)
+            if low == high:
+                continue  # empty partition
+            current = position.offset
+            if current == OFFSET_INVALID:
+                # Nothing fetched this session (e.g. a restart after everything was
+                # already committed): the committed offset is the real position.
+                current = committed.get((position.topic, position.partition), OFFSET_INVALID)
+            if current == OFFSET_INVALID or current < high:
+                return False
+    except KafkaException:
+        return False
+    return True
 
 
 def _collect_batch(

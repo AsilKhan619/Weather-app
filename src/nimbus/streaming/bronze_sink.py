@@ -14,11 +14,11 @@ import pyarrow.parquet as pq
 from nimbus.common.kafka import KafkaMessageLike, make_consumer
 from nimbus.common.logging import configure_logging
 from nimbus.common.settings import get_settings
+from nimbus.streaming.bronze_reader import DEFAULT_LAKE_ROOT
+from nimbus.streaming.cli import parse_drain_flag
 from nimbus.streaming.microbatch import run_microbatch_loop
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_LAKE_ROOT = Path("data/lake/bronze")
 
 
 def write_batch_to_parquet(
@@ -40,7 +40,11 @@ def write_batch_to_parquet(
             "value": [msg.value() for msg in messages],
         }
     )
-    file_path = partition_dir / f"{uuid4()}.parquet"
+    # UTC timestamp prefix: sorting filenames reproduces write order, which is
+    # arrival order - what a replay needs so a correction still lands after
+    # the report it corrects.
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    file_path = partition_dir / f"{stamp}-{uuid4().hex[:8]}.parquet"
     pq.write_table(table, file_path)
     logger.info(
         "wrote bronze batch",
@@ -50,6 +54,7 @@ def write_batch_to_parquet(
 
 
 def main(topics: list[str] | None = None) -> None:
+    drain = parse_drain_flag("Bronze sink: raw topics -> Parquet lake")
     settings = get_settings()
     configure_logging(settings.log_level)
     topics = topics or ["weather.forecast.raw.v1", "weather.observation.raw.v1"]
@@ -64,7 +69,7 @@ def main(topics: list[str] | None = None) -> None:
         for topic, topic_messages in by_topic.items():
             write_batch_to_parquet(topic_messages, topic)
 
-    run_microbatch_loop(consumer, topics, handle_batch)
+    run_microbatch_loop(consumer, topics, handle_batch, drain=drain)
 
 
 if __name__ == "__main__":

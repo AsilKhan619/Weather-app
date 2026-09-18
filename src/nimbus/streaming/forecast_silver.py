@@ -4,7 +4,7 @@ to weather.dlq.v1 with the reason and never blocks the partition - the rest
 of the batch still gets written."""
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import pandas as pd
 from confluent_kafka import Producer
@@ -18,6 +18,7 @@ from nimbus.common.logging import configure_logging
 from nimbus.common.schemas import ForecastBackfillRawPayload, ForecastRawPayload
 from nimbus.common.settings import get_settings
 from nimbus.common.tables import forecast_table
+from nimbus.streaming.cli import parse_drain_flag
 from nimbus.streaming.microbatch import run_microbatch_loop
 from nimbus.transform.forecast import explode_forecast_payload, explode_previous_runs_payload
 
@@ -63,9 +64,17 @@ def upsert_forecast_rows(engine: Engine, rows: pd.DataFrame) -> None:
     chunked_upsert(engine, forecast_table, _CONFLICT_COLUMNS, _UPDATE_COLUMNS, records)
 
 
-def process_batch(
-    messages: Sequence[KafkaMessageLike], engine: Engine, dlq_producer: Producer
-) -> None:
+PoisonHandler = Callable[[KafkaMessageLike, Exception], None]
+
+
+def load_messages(
+    messages: Sequence[KafkaMessageLike], engine: Engine, on_poison: PoisonHandler
+) -> int:
+    """Validate -> transform -> upsert a batch; returns how many messages loaded.
+    Independent of Kafka (works on anything message-shaped), so the same code
+    serves the live consumer and a replay from the bronze lake. A message that
+    fails validation or transformation goes to `on_poison` and never blocks the
+    rest of the batch."""
     frames: list[pd.DataFrame] = []
     for msg in messages:
         try:
@@ -74,14 +83,22 @@ def process_batch(
                 raise ValueError("message has no value")
             frames.append(message_to_frame(raw_value))
         except (ValidationError, ValueError, KeyError, TypeError) as exc:
-            send_to_dlq(dlq_producer, msg, exc, SOURCE_TOPIC)
+            on_poison(msg, exc)
 
     if frames:
         upsert_forecast_rows(engine, pd.concat(frames, ignore_index=True))
+    return len(frames)
+
+
+def process_batch(
+    messages: Sequence[KafkaMessageLike], engine: Engine, dlq_producer: Producer
+) -> None:
+    load_messages(messages, engine, lambda m, e: send_to_dlq(dlq_producer, m, e, SOURCE_TOPIC))
     dlq_producer.flush(10)
 
 
 def main() -> None:
+    drain = parse_drain_flag("Silver consumer: weather.forecast.raw.v1 -> silver.forecast")
     settings = get_settings()
     configure_logging(settings.log_level)
     consumer = make_consumer(settings, group_id=CONSUMER_GROUP)
@@ -91,7 +108,9 @@ def main() -> None:
     def handle_batch(messages: Sequence[KafkaMessageLike]) -> None:
         process_batch(messages, engine, dlq_producer)
 
-    run_microbatch_loop(consumer, [SOURCE_TOPIC], handle_batch)
+    # Backfill events carry thousands of rows each, so keep batches small enough
+    # that one batch's frame stays comfortably in memory.
+    run_microbatch_loop(consumer, [SOURCE_TOPIC], handle_batch, max_batch_size=50, drain=drain)
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ natural key never includes raw_text, so "keep the latest version of
 corrected reports" falls out of the upsert for free."""
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import pandas as pd
 from confluent_kafka import Producer
@@ -19,6 +19,7 @@ from nimbus.common.logging import configure_logging
 from nimbus.common.schemas import ObservationRawPayload
 from nimbus.common.settings import get_settings
 from nimbus.common.tables import observation_table
+from nimbus.streaming.cli import parse_drain_flag
 from nimbus.streaming.microbatch import run_microbatch_loop
 from nimbus.transform.observation import explode_observation_payload
 
@@ -42,28 +43,48 @@ def upsert_observation_rows(engine: Engine, rows: pd.DataFrame) -> None:
     chunked_upsert(engine, observation_table, _CONFLICT_COLUMNS, _UPDATE_COLUMNS, records)
 
 
-def process_batch(
-    messages: Sequence[KafkaMessageLike], engine: Engine, dlq_producer: Producer
-) -> None:
+PoisonHandler = Callable[[KafkaMessageLike, Exception], None]
+
+
+def message_to_frame(raw_value: bytes) -> pd.DataFrame:
+    """Validate one raw observation message and explode it (shared by the live
+    consumer, replay, and reconciliation - one definition of "what silver
+    should contain for this message")."""
+    envelope = EventEnvelope[ObservationRawPayload].model_validate_json(raw_value)
+    frame = explode_observation_payload(envelope.payload, envelope.ingestion_mode)
+    frame["source_event_id"] = envelope.event_id
+    return frame
+
+
+def load_messages(
+    messages: Sequence[KafkaMessageLike], engine: Engine, on_poison: PoisonHandler
+) -> int:
+    """Validate -> transform -> upsert a batch; returns how many messages loaded.
+    Kafka-independent so a replay from the bronze lake reuses it unchanged."""
     frames: list[pd.DataFrame] = []
     for msg in messages:
         try:
             raw_value = msg.value()
             if raw_value is None:
                 raise ValueError("message has no value")
-            envelope = EventEnvelope[ObservationRawPayload].model_validate_json(raw_value)
-            df = explode_observation_payload(envelope.payload, envelope.ingestion_mode)
-            df["source_event_id"] = envelope.event_id
-            frames.append(df)
+            frames.append(message_to_frame(raw_value))
         except (ValidationError, ValueError, KeyError, TypeError) as exc:
-            send_to_dlq(dlq_producer, msg, exc, SOURCE_TOPIC)
+            on_poison(msg, exc)
 
     if frames:
         upsert_observation_rows(engine, pd.concat(frames, ignore_index=True))
+    return len(frames)
+
+
+def process_batch(
+    messages: Sequence[KafkaMessageLike], engine: Engine, dlq_producer: Producer
+) -> None:
+    load_messages(messages, engine, lambda m, e: send_to_dlq(dlq_producer, m, e, SOURCE_TOPIC))
     dlq_producer.flush(10)
 
 
 def main() -> None:
+    drain = parse_drain_flag("Silver consumer: weather.observation.raw.v1 -> silver.observation")
     settings = get_settings()
     configure_logging(settings.log_level)
     consumer = make_consumer(settings, group_id=CONSUMER_GROUP)
@@ -73,7 +94,7 @@ def main() -> None:
     def handle_batch(messages: Sequence[KafkaMessageLike]) -> None:
         process_batch(messages, engine, dlq_producer)
 
-    run_microbatch_loop(consumer, [SOURCE_TOPIC], handle_batch)
+    run_microbatch_loop(consumer, [SOURCE_TOPIC], handle_batch, drain=drain)
 
 
 if __name__ == "__main__":
