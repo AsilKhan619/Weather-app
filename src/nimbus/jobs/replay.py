@@ -17,7 +17,7 @@ import argparse
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from confluent_kafka import OFFSET_INVALID, Consumer, ConsumerGroupTopicPartitions, TopicPartition
@@ -92,6 +92,14 @@ def replay_from_bronze(
     return result
 
 
+def parse_utc(value: str) -> datetime:
+    """ISO-8601 -> aware datetime; a value with no offset is taken as UTC. A naive
+    datetime's .timestamp() silently uses the machine's local timezone, which
+    would shift a replay window by hours without any error."""
+    parsed = datetime.fromisoformat(value)
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
 def resolve_offset_targets(
     consumer: Consumer, topic: str, from_time: datetime | None
 ) -> list[TopicPartition]:
@@ -158,7 +166,7 @@ def main() -> None:
     offsets.add_argument("--group", required=True)
     offsets.add_argument("--topic", required=True, choices=sorted(TARGETS))
     offsets.add_argument(
-        "--from-time", type=datetime.fromisoformat, help="ISO-8601 UTC time; default earliest"
+        "--from-time", type=parse_utc, help="ISO-8601 time, UTC if no offset; default earliest"
     )
 
     args = parser.parse_args()

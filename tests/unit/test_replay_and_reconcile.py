@@ -157,6 +157,16 @@ def test_offset_reset_by_time_with_no_later_message_resolves_to_the_end() -> Non
     assert _targets(consumer, datetime(2026, 9, 1, tzinfo=UTC)) == {0: 50, 1: 7}
 
 
+def test_a_naive_from_time_is_utc_not_the_machines_local_timezone() -> None:
+    naive = replay.parse_utc("2026-09-15T00:00:00")
+    explicit = replay.parse_utc("2026-09-15T00:00:00+00:00")
+    offset = replay.parse_utc("2026-09-15T02:00:00+02:00")
+
+    assert naive == explicit == offset
+    assert naive.tzinfo is not None
+    assert int(naive.timestamp()) == 1789430400  # 2026-09-15T00:00:00Z exactly
+
+
 # --- reconcile -------------------------------------------------------------
 
 _KEYS = ("model", "init_time", "variable")

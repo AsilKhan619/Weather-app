@@ -6,7 +6,7 @@ Runs entirely free and self-hosted: every data source (Open-Meteo, aviationweath
 
 Full requirements: [`docs/PROJECT_BRIEF.md`](docs/PROJECT_BRIEF.md). Phase-by-phase progress: [`docs/PLAN.md`](docs/PLAN.md). Design decisions: [`docs/decisions/`](docs/decisions/).
 
-**Status: Phase 1 (forecast ingestion) complete.** Live forecasts flow Open-Meteo → Kafka → a Parquet bronze lake and a validated, idempotent Postgres silver table today. The commands below reflect what actually works; later phases fill in `make demo`, `make backfill`, `make eval`, `make trace`, and `make replay`.
+**Status: Phase 2 (observations and backfill) implemented; real multi-month load still to be run.** Live forecasts and METAR observations flow through Kafka into a Parquet bronze lake and validated, idempotent Postgres silver tables for 25 locations. Historical forecasts (Open-Meteo Previous Runs) and observations (IEM ASOS) load through the same topics, and silver can be rebuilt from the lake — see [`docs/runbook.md`](docs/runbook.md). `make demo` / `make backfill` have been built and tested against recorded responses but not yet run end to end against the live providers; measured results will be added once they are. Gold verification, the dashboard, briefings and the agent come in later phases.
 
 ## Architecture
 
@@ -47,17 +47,38 @@ Prerequisites: [Docker Desktop](https://www.docker.com/products/docker-desktop/)
 
 ```bash
 cp .env.example .env
-uv sync --extra ingestion   # installs Python dependencies (+ pyarrow for the bronze lake)
-make up                     # starts Kafka (KRaft), Kafbat UI (localhost:8080), and Postgres
-                             # (also runs migrations and provisions topics)
-make test                   # unit tests
-make test-integration       # real Kafka + Postgres via Testcontainers
-make lint
-make typecheck
-make produce-forecasts      # runs the live forecast producer (Ctrl+C to stop)
+uv sync --extra ingestion   # Python dependencies (+ pyarrow for the bronze lake)
+make up                     # Kafka (KRaft), Kafbat UI (localhost:8080), Postgres;
+                            # also runs migrations and provisions topics
+make demo                   # last 30 days for all 25 locations -> bronze + silver, then reconciles
 ```
 
-`make demo` (a short backfill + populated dashboard) and `make backfill` (full history) land in Phase 2. `make eval`, `make trace`, and `make replay` land in Phases 3 and 6.
+Then look at the data:
+
+```bash
+docker exec nimbus-postgres psql -U nimbus -d nimbus -c "select ingestion_mode, count(*) from silver.forecast group by 1"
+```
+
+Other targets:
+
+```bash
+make backfill               # everything since 2024-01-01 (needs two days of API budget)
+make drain                  # run the consumers until caught up, then exit
+make reconcile              # produced -> bronze -> silver check
+make produce-forecasts      # live forecast producer (Ctrl+C to stop)
+make produce-observations   # live METAR producer (Ctrl+C to stop)
+make test                   # unit tests
+make test-integration       # real Kafka + Postgres via Testcontainers
+make lint && make typecheck
+```
+
+`make eval`, `make trace` land in Phases 3 and 6. Operational procedures (recovering a crashed consumer, rebuilding silver from bronze, the DLQ, rate limits) are in [`docs/runbook.md`](docs/runbook.md).
+
+## Data sources and attribution
+
+- Forecasts: [Open-Meteo](https://open-meteo.com/) (Single Runs and Previous Runs APIs; CC BY 4.0, non-commercial use, no key).
+- Live observations: [aviationweather.gov](https://aviationweather.gov/data/api/) METAR Data API.
+- Historical observations: [Iowa Environmental Mesonet](https://mesonet.agron.iastate.edu/ASOS/) ASOS archive.
 
 ## Tech stack
 

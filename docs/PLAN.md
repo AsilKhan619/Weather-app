@@ -47,12 +47,20 @@
 
 ## Phase 2 — Observations and backfill
 
-- [ ] METAR producer (aviationweather.gov)
-- [ ] Backfill CLI (Open-Meteo Previous Runs API + IEM ASOS `asos.py` endpoint — see ADR)
-- [ ] Corrected/late report handling
-- [ ] Expand to all ~25 locations
+- [x] METAR producer (aviationweather.gov) + silver consumer + `silver.observation`
+- [x] Corrected/late report handling (COR flag; correction outranks original even in one batch)
+- [x] Expand to all 25 locations (every station verified live)
+- [x] Backfill: Open-Meteo Previous Runs (forecasts) + IEM ASOS (observations), same topics, rate-limit aware and resumable — ADR 0004
+- [x] `--drain` consumers (lag-based) so `make demo` / `make backfill` run unattended
+- [x] `replay bronze` (rebuild from the lake) and `replay offsets` (reset a group)
+- [x] `make reconcile` — rebuild-equivalence check, results in `ops.reconciliation_results`
+- [x] `docs/runbook.md`
+- [ ] **Run `make demo` and `make backfill` against the live providers** and confirm several months of history for all 25 locations (needs local Docker; see below)
 
-*Acceptance: months of history per location; reconciliation counts match; silver rebuilds from bronze via the runbook.*
+*Acceptance:*
+- *months of history per location* — **OPEN.** Code and request shapes are verified against live responses, but no real multi-month load has been run; local Docker was unavailable. Run `make demo`, then `make backfill` (spans two days — ADR 0004), and record measured row counts and call usage here.
+- *reconciliation counts match* — covered by `tests/integration/test_backfill_and_rebuild.py` (poison messages accounted for; missing/extra rows detected).
+- *silver rebuilds from bronze via the runbook* — covered by the same test: truncate both tables, rebuild from a real lake, every row identical. Manual walk-through of `docs/runbook.md` §4 on the real stack still to do.
 
 ## Phase 3 — Gold layer and data quality
 

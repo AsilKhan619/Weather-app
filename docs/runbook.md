@@ -1,0 +1,172 @@
+# Runbook
+
+Operational procedures for Nimbus. Every procedure here is safe to repeat: all
+silver writes are idempotent upserts on a natural key, so re-running a step
+never duplicates data.
+
+Commands assume the stack is up (`make up`). On Windows, use Git Bash or WSL2.
+
+## Mental model (read this first)
+
+```
+producers ─► Kafka raw topics ─┬─► bronze sink ─► Parquet lake   (long-term truth)
+                               └─► silver consumers ─► Postgres silver (derived)
+```
+
+- **Kafka retention is short (7 days).** Don't rely on it for recovery past that.
+- **The bronze lake is the source of truth.** Silver is *derived* and can always
+  be rebuilt from it. Nothing in silver is irreplaceable.
+- Bronze and silver are independent consumer groups (`bronze-sink`,
+  `silver-forecast`, `silver-observation`). One being behind never affects another.
+- A message that fails validation goes to `weather.dlq.v1` and never blocks its
+  partition. If silver looks short, check the DLQ before assuming data loss.
+
+## 1. Is the pipeline healthy? (`make reconcile`)
+
+```bash
+make reconcile
+```
+
+Prints, per topic: messages produced, messages in bronze, distinct events,
+unparseable messages (these went to the DLQ), the silver rows bronze *implies*,
+the silver rows that *exist*, and the difference in each direction.
+
+| Result | Meaning | Go to |
+| --- | --- | --- |
+| `MATCH` | Silver is exactly what a rebuild from bronze would produce. | nothing to do |
+| `missing from silver > 0` | A consumer lost or hasn't yet processed data. | §2, then §3 |
+| `extra in silver > 0` | Silver holds rows bronze can't explain (bad manual edit, wrong transform version, bronze sink was down while a producer ran). | §4 |
+| `bronze unparseable > 0` | Poison messages. Not an error by itself. | §5 |
+
+Exit code is non-zero on mismatch, and every run is recorded in
+`ops.reconciliation_results`, so history is queryable:
+
+```sql
+select checked_at, topic, matched, missing_from_silver, extra_in_silver
+from ops.reconciliation_results order by checked_at desc limit 10;
+```
+
+**"Missing" right after a backfill is normal** - the consumers simply haven't
+run yet. Run `make drain` first, then reconcile.
+
+## 2. A consumer crashed or was killed mid-batch
+
+Nothing to do beyond restarting it. Offsets are committed only *after* a batch
+is written, so the uncommitted batch is redelivered and re-applied idempotently.
+
+```bash
+uv run python -m nimbus.streaming.forecast_silver      # or observation_silver / bronze_sink
+```
+
+To catch up and exit instead of running forever, add `--drain`.
+
+Confirm with `make reconcile`.
+
+## 3. Rebuild silver by resetting a consumer group's offsets
+
+Use when a transform was wrong (or a silver table was damaged) **and the data is
+still inside Kafka retention** (7 days).
+
+1. **Stop the consumer.** A group with live members refuses an offset reset.
+2. Fix the transform (if that was the problem) and deploy it.
+3. Reset the group. Earliest retained offset:
+
+   ```bash
+   make replay ARGS="offsets --group silver-forecast --topic weather.forecast.raw.v1"
+   ```
+
+   Or from a point in time (ISO-8601, UTC) - e.g. everything since a bad deploy:
+
+   ```bash
+   make replay ARGS="offsets --group silver-forecast --topic weather.forecast.raw.v1 --from-time 2026-09-15T00:00:00"
+   ```
+
+4. Restart the consumer (or `--drain` it). It re-reads and upserts.
+5. `make reconcile`.
+
+Note: a time-based reset re-reads from that time forward only; it does not
+remove rows already written. If the old rows were *wrong* (not just missing),
+also run §4 for that table.
+
+## 4. Rebuild silver from the bronze lake (Kafka retention already expired)
+
+The lake is complete history, so this always works. It uses the exact
+`load_messages` code the live consumers run - a rebuild and the live path cannot
+drift apart.
+
+```bash
+# 1. stop the silver consumer for the table you're rebuilding
+# 2. rebuild. --truncate empties the table first, so the result is *exactly*
+#    what bronze explains (this also removes rows bronze can't explain):
+make replay ARGS="bronze --topic weather.forecast.raw.v1 --truncate"
+make replay ARGS="bronze --topic weather.observation.raw.v1 --truncate"
+# 3. verify
+make reconcile
+# 4. restart the consumer
+```
+
+Without `--truncate` the replay only re-applies bronze on top of what's there:
+it repairs *missing* rows but won't remove *extra* ones. Use it when you only
+need repair, or can't afford an empty table while it runs.
+
+Replay reads files in write order (filenames start with a UTC timestamp), so a
+correction (COR) still lands after the report it corrects. Unparseable messages
+are counted and skipped; the summary line reports them.
+
+Time is bounded by the pandas transform and the Postgres upserts, not by Kafka
+(there is no broker in this path). It has not been benchmarked yet; measured
+figures will be recorded in the README in Phase 8.
+
+**This is tested**: `tests/integration/test_backfill_and_rebuild.py` truncates
+both silver tables, rebuilds from a real lake, and asserts every row (values,
+flags, lineage ids) is identical to the original.
+
+## 5. Investigating the dead-letter queue
+
+```bash
+docker exec nimbus-kafka /opt/kafka/bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 --topic weather.dlq.v1 --from-beginning --max-messages 5
+```
+
+(Or browse the topic in Kafbat UI at http://localhost:8080.) Each record has the
+original payload, `error_type`/`error_message`, and the source topic/partition/offset.
+
+- A one-off malformed message: ignore it.
+- A burst with the same `error_type`: a producer or transform changed shape.
+  Fix it, then rebuild per §4 - the fixed transform will now accept them because
+  they are still in bronze.
+
+## 6. Loading history (`make demo` / `make backfill`)
+
+```bash
+make demo        # last 30 days, all 25 locations, then drain + reconcile
+make backfill    # everything since 2024-01-01, then drain + reconcile
+```
+
+Both first *produce* (`nimbus.jobs.backfill`), then `make drain` runs the bronze
+sink and both silver consumers to completion, then `make reconcile`.
+
+**Rate limits (Open-Meteo, non-commercial): 600 calls/min, 10,000/day.** Requests
+are weighted by volume (each 10 variables x 14 days per location counts as one).
+A 7-day chunk of forecasts for 25 locations is ~35 calls, so the job waits ~4 s
+between requests. `make demo` (30 days) costs ~450 calls; a full history is
+~15,000 and **must span two days**. The job prints its estimate up front, and if the provider
+returns 429 it stops and prints the exact date to resume from:
+
+```bash
+uv run python -m nimbus.jobs.backfill --start-date 2025-03-01
+```
+
+Re-running an overlapping window is safe (deterministic event ids + upserts).
+Observations come from the free IEM archive, one polite sequential request per
+station per 90 days.
+
+Useful flags: `--days N`, `--full`, `--start-date`, `--end-date`,
+`--only forecasts|observations`.
+
+## 7. Provider attribution
+
+Forecast data is from [Open-Meteo](https://open-meteo.com/) (CC BY 4.0;
+non-commercial use). Historical observations are from the Iowa Environmental
+Mesonet ASOS archive; live observations from aviationweather.gov. Nimbus is an
+analytics project, not a safety tool - use official weather services for warnings.
