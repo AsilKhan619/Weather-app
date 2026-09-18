@@ -4,10 +4,6 @@ duplicates; a malformed message lands in the DLQ without stopping the
 consumer. Uses a recorded Open-Meteo fixture - never the live API."""
 
 import json
-import os
-import subprocess
-import sys
-from collections.abc import Iterator
 from pathlib import Path
 
 import httpx
@@ -18,16 +14,17 @@ from testcontainers.community.kafka import KafkaContainer
 from testcontainers.community.postgres import PostgresContainer
 
 from nimbus.common.config import Location, ModelsConfig, ModelSpec
-from nimbus.common.kafka import ensure_topics, make_consumer, make_producer
+from nimbus.common.kafka import make_consumer, make_producer
 from nimbus.common.settings import Settings
 from nimbus.ingestion.forecast_producer import produce_one_poll_cycle
 from nimbus.streaming.bronze_sink import write_batch_to_parquet
 from nimbus.streaming.forecast_silver import DLQ_TOPIC, SOURCE_TOPIC, process_batch
 from nimbus.streaming.microbatch import GracefulShutdown, _collect_batch
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = json.loads(
-    (REPO_ROOT / "tests" / "fixtures" / "open_meteo_forecast_response.json").read_text()
+    (
+        Path(__file__).resolve().parents[1] / "fixtures" / "open_meteo_forecast_response.json"
+    ).read_text()
 )
 
 
@@ -71,36 +68,6 @@ def _fixture_handler(request: httpx.Request) -> httpx.Response:
     if n_locations == 1:
         return httpx.Response(200, json=FIXTURE)
     return httpx.Response(200, json=[FIXTURE for _ in range(n_locations)])
-
-
-@pytest.fixture
-def stack() -> Iterator[tuple[Settings, KafkaContainer, PostgresContainer]]:
-    with PostgresContainer("postgres:18.6-alpine") as pg, KafkaContainer() as kafka:
-        pg_env = {
-            **os.environ,
-            "POSTGRES_HOST": pg.get_container_host_ip(),
-            "POSTGRES_PORT": str(pg.get_exposed_port(5432)),
-            "POSTGRES_DB": pg.dbname,
-            "POSTGRES_USER": pg.username,
-            "POSTGRES_PASSWORD": pg.password,
-        }
-        subprocess.run(
-            [sys.executable, "-m", "alembic", "upgrade", "head"],
-            cwd=REPO_ROOT,
-            env=pg_env,
-            check=True,
-        )
-        settings = Settings(
-            _env_file=None,
-            postgres_host=pg.get_container_host_ip(),
-            postgres_port=int(pg.get_exposed_port(5432)),
-            postgres_db=pg.dbname,
-            postgres_user=pg.username,
-            postgres_password=pg.password,
-            kafka_bootstrap_servers=kafka.get_bootstrap_server(),
-        )
-        ensure_topics(settings)
-        yield settings, kafka, pg
 
 
 def _run_one_poll_and_produce(settings: Settings) -> int:

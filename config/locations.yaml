@@ -1,7 +1,9 @@
-# 5 starter locations across contrasting climates (brief section 5). Picked for
-# reliable METAR coverage; expand toward ~25 in Phase 2. Phoenix deliberately
-# has a station in a non-DST-observing timezone — a real edge case the
-# transform unit tests (brief section 14) must handle correctly.
+# ~25 locations across contrasting climates and continents (brief section 5).
+# The first 5 shipped in Phase 0/1; Phase 2 expands to the full set. Every
+# station id below was verified live against aviationweather.gov's METAR API
+# before being added (see ADR 0003) - all report real, current data.
+# Phoenix deliberately has a station in a non-DST-observing timezone — a
+# real edge case the transform unit tests (brief section 14) must handle.
 locations:
   - id: san-francisco
     name: San Francisco, CA, USA
@@ -47,3 +49,183 @@ locations:
     elevation_m: 7
     timezone: Asia/Singapore
     station: WSSS
+
+  - id: london
+    name: London, UK
+    climate: maritime-temperate
+    latitude: 51.477
+    longitude: -0.461
+    elevation_m: 26
+    timezone: Europe/London
+    station: EGLL
+
+  - id: reykjavik
+    name: Reykjavik, Iceland
+    climate: subarctic
+    latitude: 64.129
+    longitude: -21.941
+    elevation_m: 12
+    timezone: Atlantic/Reykjavik
+    station: BIRK
+
+  - id: dubai
+    name: Dubai, UAE
+    climate: desert
+    latitude: 25.254
+    longitude: 55.366
+    elevation_m: 5
+    timezone: Asia/Dubai
+    station: OMDB
+
+  - id: cairo
+    name: Cairo, Egypt
+    climate: desert
+    latitude: 30.133
+    longitude: 31.405
+    elevation_m: 142
+    timezone: Africa/Cairo
+    station: HECA
+
+  - id: tokyo
+    name: Tokyo, Japan
+    climate: humid-subtropical
+    latitude: 35.553
+    longitude: 139.781
+    elevation_m: 5
+    timezone: Asia/Tokyo
+    station: RJTT
+
+  - id: mumbai
+    name: Mumbai, India
+    climate: tropical-monsoon
+    latitude: 19.100
+    longitude: 72.859
+    elevation_m: 14
+    timezone: Asia/Kolkata
+    station: VABB
+
+  - id: beijing
+    name: Beijing, China
+    climate: continental
+    latitude: 40.082
+    longitude: 116.603
+    elevation_m: 31
+    timezone: Asia/Shanghai
+    station: ZBAA
+
+  - id: nairobi
+    name: Nairobi, Kenya
+    climate: highland-tropical
+    latitude: -1.319
+    longitude: 36.928
+    elevation_m: 1615
+    timezone: Africa/Nairobi
+    station: HKJK
+
+  - id: cape-town
+    name: Cape Town, South Africa
+    climate: mediterranean
+    latitude: -33.965
+    longitude: 18.602
+    elevation_m: 48
+    timezone: Africa/Johannesburg
+    station: FACT
+
+  - id: sao-paulo
+    name: Sao Paulo, Brazil
+    climate: subtropical-highland
+    latitude: -23.432
+    longitude: -46.469
+    elevation_m: 745
+    timezone: America/Sao_Paulo
+    station: SBGR
+
+  - id: santiago
+    name: Santiago, Chile
+    climate: mediterranean-semi-arid
+    latitude: -33.393
+    longitude: -70.786
+    elevation_m: 478
+    timezone: America/Santiago
+    station: SCEL
+
+  - id: bogota
+    name: Bogota, Colombia
+    climate: tropical-highland
+    latitude: 4.706
+    longitude: -74.151
+    elevation_m: 2547
+    timezone: America/Bogota
+    station: SKBO
+
+  - id: sydney
+    name: Sydney, Australia
+    climate: temperate-oceanic
+    latitude: -33.946
+    longitude: 151.173
+    elevation_m: 3
+    timezone: Australia/Sydney
+    station: YSSY
+
+  - id: new-york
+    name: New York, NY, USA
+    climate: humid-continental
+    latitude: 40.639
+    longitude: -73.764
+    elevation_m: 3
+    timezone: America/New_York
+    station: KJFK
+
+  - id: miami
+    name: Miami, FL, USA
+    climate: tropical
+    latitude: 25.788
+    longitude: -80.317
+    elevation_m: 1
+    timezone: America/New_York
+    station: KMIA
+
+  - id: anchorage
+    name: Anchorage, AK, USA
+    climate: subarctic
+    latitude: 61.169
+    longitude: -150.028
+    elevation_m: 39
+    timezone: America/Anchorage
+    station: PANC
+
+  - id: mexico-city
+    name: Mexico City, Mexico
+    climate: subtropical-highland
+    latitude: 19.436
+    longitude: -99.072
+    elevation_m: 2224
+    timezone: America/Mexico_City
+    station: MMMX
+
+  - id: ulaanbaatar
+    name: Ulaanbaatar, Mongolia
+    climate: cold-semi-arid
+    latitude: 47.843
+    longitude: 106.766
+    elevation_m: 1300
+    timezone: Asia/Ulaanbaatar
+    station: ZMUB
+
+  - id: perth
+    name: Perth, Australia
+    climate: mediterranean
+    latitude: -31.927
+    longitude: 115.976
+    elevation_m: 16
+    timezone: Australia/Perth
+    station: YPPH
+
+  - id: kathmandu
+    name: Kathmandu, Nepal
+    climate: mountain
+    latitude: 27.697
+    longitude: 85.359
+    elevation_m: 1334
+    timezone: Asia/Kathmandu
+    station: VNKT
