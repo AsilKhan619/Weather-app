@@ -6,10 +6,12 @@ corrected reports" falls out of the upsert for free."""
 
 import logging
 from collections.abc import Callable, Sequence
+from typing import Any
 
 import pandas as pd
 from confluent_kafka import Producer
 from pydantic import ValidationError
+from sqlalchemy import ColumnElement, not_, or_
 from sqlalchemy.engine import Engine
 
 from nimbus.common.db import chunked_upsert, dedupe_on_key, make_engine
@@ -34,13 +36,28 @@ _CONFLICT_COLUMNS = ["station", "observed_at", "variable"]
 _UPDATE_COLUMNS = ["value", "raw_text", "is_corrected", "ingestion_mode", "source_event_id"]
 
 
+def _may_overwrite(excluded: Any) -> ColumnElement[bool]:
+    """A stored correction (COR) is only replaced by another correction, never by
+    an uncorrected report - even one arriving in a later batch (an overlapping
+    backfill window, a live poll that still lists the original). Combined with
+    the in-batch sort below, the outcome no longer depends on arrival order."""
+    return or_(excluded.is_corrected, not_(observation_table.c.is_corrected))
+
+
 def upsert_observation_rows(engine: Engine, rows: pd.DataFrame) -> None:
     if rows.empty:
         return
     # A correction outranks the report it corrects even if both land in one batch.
     rows = dedupe_on_key(rows.sort_values("is_corrected", kind="stable"), _CONFLICT_COLUMNS)
     records = rows.astype(dict.fromkeys(_STRING_COLUMNS, "string")).to_dict("records")
-    chunked_upsert(engine, observation_table, _CONFLICT_COLUMNS, _UPDATE_COLUMNS, records)
+    chunked_upsert(
+        engine,
+        observation_table,
+        _CONFLICT_COLUMNS,
+        _UPDATE_COLUMNS,
+        records,
+        update_where=_may_overwrite,
+    )
 
 
 PoisonHandler = Callable[[KafkaMessageLike, Exception], None]

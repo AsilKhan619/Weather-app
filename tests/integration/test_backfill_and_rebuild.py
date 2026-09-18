@@ -30,7 +30,7 @@ from nimbus.ingestion.backfill import backfill_forecasts, backfill_observations
 from nimbus.ingestion.forecast_producer import produce_one_poll_cycle as produce_live_forecasts
 from nimbus.ingestion.observation_producer import produce_one_poll_cycle as produce_live_metars
 from nimbus.jobs.reconcile import TOPIC_SPECS, reconcile_topic
-from nimbus.jobs.replay import replay_from_bronze
+from nimbus.jobs.replay import UnsafeRebuildError, replay_from_bronze
 from nimbus.streaming import forecast_silver, observation_silver
 from nimbus.streaming.bronze_sink import write_batch_to_parquet
 from nimbus.streaming.microbatch import run_microbatch_loop
@@ -94,7 +94,7 @@ def _previous_runs_api(request: httpx.Request) -> httpx.Response:
             "time": _HOURS,
             "temperature_2m_previous_day1": [10.0 + i * 0.1 for i in range(48)],
             "temperature_2m_previous_day2": [9.0 + i * 0.1 for i in range(48)],
-            "wind_speed_10m_previous_day1": [18.0] * 48,
+            "wind_speed_10m_previous_day1": [None] + [18.0] * 47,  # one missing hour
         }
     }
     return httpx.Response(200, json=[body] * n if n > 1 else body)
@@ -220,6 +220,19 @@ def test_live_and_backfilled_data_share_the_same_tables(loaded: Loaded) -> None:
     modes = dict(_rows(engine, "SELECT ingestion_mode, count(*) FROM silver.forecast GROUP BY 1"))
     assert modes == {"backfill": 2 * 3 * 48, "live": 2 * 24 * 4}
 
+    # missing values must be SQL NULL, never NaN: 'NaN'::float8 passes IS NOT NULL
+    # and would turn avg() over the column into NaN (Phase 3 accuracy metrics)
+    assert _scalar(engine, "SELECT count(*) FROM silver.forecast WHERE value = 'NaN'") == 0
+    assert _scalar(engine, "SELECT count(*) FROM silver.forecast WHERE value IS NULL") == 2
+    # avg() over the backfilled wind column ignores the NULL: 94 hours of 18 km/h = 5 m/s.
+    # (It would be NaN if the missing hour had been stored as NaN.)
+    backfilled_wind_avg = _scalar(
+        engine,
+        "SELECT avg(value) FROM silver.forecast "
+        "WHERE variable = 'wind_speed_10m' AND ingestion_mode = 'backfill'",
+    )
+    assert backfilled_wind_avg == pytest.approx(5.0)
+
     # the backfill's derived init_time = valid_time - lead offset
     derived = _scalar(
         engine,
@@ -296,6 +309,14 @@ def test_reconciliation_detects_missing_and_unexplained_rows(loaded: Loaded) -> 
     extra = reconcile_topic(engine, forecast_spec, loaded.lake)
     assert (extra.matched, extra.missing_from_silver, extra.extra_in_silver) == (False, 0, 1)
 
-    # only a truncating rebuild removes it - and leaves the module's data consistent
-    replay_from_bronze(FORECAST_TOPIC, engine, loaded.lake, truncate=True)
+    # a truncating rebuild would DELETE that row, and it is indistinguishable from
+    # real data that only exists in silver (e.g. the bronze sink was down) - so it
+    # must refuse, and must do so before touching anything
+    with pytest.raises(UnsafeRebuildError, match="1 rows"):
+        replay_from_bronze(FORECAST_TOPIC, engine, loaded.lake, truncate=True)
+    assert _scalar(engine, "SELECT count(*) FROM silver.forecast WHERE model = 'phantom'") == 1
+    assert _scalar(engine, "SELECT count(*) FROM silver.forecast") > 1  # table not emptied
+
+    # --force is the deliberate acceptance of that loss - and leaves the module's data consistent
+    replay_from_bronze(FORECAST_TOPIC, engine, loaded.lake, truncate=True, force=True)
     assert reconcile_topic(engine, forecast_spec, loaded.lake).matched

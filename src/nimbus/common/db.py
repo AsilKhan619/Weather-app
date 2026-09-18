@@ -1,12 +1,13 @@
 """SQLAlchemy Core engine/session helpers (psycopg 3 driver)."""
 
-from collections.abc import Iterator, Sequence
+import math
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import Engine, Table, create_engine, text
+from sqlalchemy import ColumnElement, Engine, Table, create_engine, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -31,16 +32,20 @@ def record_ingestion_run(
     started_at: datetime,
     produced: int,
     failed: int,
+    error_message: str | None = None,
 ) -> None:
-    """Every producer's per-run metrics (brief section 6: `ops.ingestion_runs`)."""
-    status = "success" if failed == 0 else "failed"
+    """Every producer's per-run metrics (brief section 6: `ops.ingestion_runs`).
+    A run that stopped early passes `error_message`, which marks it failed even
+    when no individual request failed (e.g. it was rate limited part-way)."""
+    status = "success" if failed == 0 and error_message is None else "failed"
     with engine.begin() as conn:
         conn.execute(
             text(
                 "INSERT INTO ops.ingestion_runs "
                 "(source, ingestion_mode, status, started_at, finished_at, "
-                "messages_produced, messages_failed) "
-                "VALUES (:source, :mode, :status, :started_at, :finished_at, :produced, :failed)"
+                "messages_produced, messages_failed, error_message) "
+                "VALUES (:source, :mode, :status, :started_at, :finished_at, :produced, :failed, "
+                ":error_message)"
             ),
             {
                 "source": source,
@@ -50,8 +55,20 @@ def record_ingestion_run(
                 "finished_at": datetime.now(UTC),
                 "produced": produced,
                 "failed": failed,
+                "error_message": error_message,
             },
         )
+
+
+def nan_to_none(records: list[dict[Any, Any]]) -> list[dict[Any, Any]]:
+    """Missing floats must reach Postgres as NULL, not NaN. pandas' to_dict()
+    yields float('nan'), and psycopg sends that as 'NaN'::float8 - a value that
+    `IS NOT NULL` accepts and that turns any avg()/sum() over the column into
+    NaN. The value columns are nullable precisely so "missing" is NULL."""
+    return [
+        {k: (None if isinstance(v, float) and math.isnan(v) else v) for k, v in record.items()}
+        for record in records
+    ]
 
 
 def chunked_upsert(
@@ -65,11 +82,17 @@ def chunked_upsert(
     records: list[dict[Any, Any]],
     *,
     chunk_size: int = UPSERT_CHUNK_SIZE,
+    update_where: Callable[[Any], ColumnElement[bool]] | None = None,
 ) -> None:
     """INSERT ... ON CONFLICT DO UPDATE, chunked to stay under Postgres's
-    bound-parameter limit. Shared by every silver consumer's load step."""
+    bound-parameter limit. Shared by every silver consumer's load step.
+
+    `update_where` receives the `excluded` row and returns a condition that must
+    hold for an existing row to be overwritten - used to stop a stale report from
+    clobbering a newer one already stored (see observation_silver)."""
     if not records:
         return
+    records = nan_to_none(records)
     with engine.begin() as conn:
         for start in range(0, len(records), chunk_size):
             chunk = records[start : start + chunk_size]
@@ -77,6 +100,7 @@ def chunked_upsert(
             stmt = stmt.on_conflict_do_update(
                 index_elements=conflict_columns,
                 set_={col: getattr(stmt.excluded, col) for col in update_columns},
+                where=update_where(stmt.excluded) if update_where is not None else None,
             )
             conn.execute(stmt)
 

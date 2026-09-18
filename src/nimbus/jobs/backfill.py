@@ -67,6 +67,15 @@ def estimate_forecast_calls(
     return n_locations * len(models.models) * (n_columns / 10) * (days / 14)
 
 
+def _abort_message(result: BackfillResult) -> str | None:
+    """A rate-limited run stopped early: record it as failed (with where to
+    resume) rather than as a clean success, so health views don't report a
+    partial load as complete."""
+    if result.aborted_at is None:
+        return None
+    return f"rate limited; resume with --start-date {result.aborted_at.isoformat()}"
+
+
 def _report(name: str, result: BackfillResult) -> None:
     print(f"{name}: produced {result.produced:,} events, {result.failed:,} failed chunks")
     if result.aborted_at is not None:
@@ -93,7 +102,13 @@ def run(
         )
         producer.flush(60)
         record_ingestion_run(
-            engine, "forecast_backfill", "backfill", started, forecasts.produced, forecasts.failed
+            engine,
+            "forecast_backfill",
+            "backfill",
+            started,
+            forecasts.produced,
+            forecasts.failed,
+            error_message=_abort_message(forecasts),
         )
         _report("forecasts", forecasts)
         ok &= forecasts.failed == 0 and forecasts.aborted_at is None

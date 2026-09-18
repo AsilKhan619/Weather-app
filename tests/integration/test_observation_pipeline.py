@@ -173,6 +173,46 @@ def test_a_correction_overwrites_the_original_report(
 
 
 @pytest.mark.integration
+def test_a_late_original_does_not_overwrite_a_stored_correction(
+    stack: tuple[Settings, KafkaContainer, PostgresContainer],
+) -> None:
+    """The dedupe inside one batch is not enough: the original can arrive in a LATER
+    batch (an overlapping backfill window, a poll that still lists it) and would
+    otherwise flip the row back to the uncorrected report."""
+    settings, _kafka, _pg = stack
+    engine = create_engine(settings.postgres_dsn)
+    dlq_producer = make_producer(settings)
+    shutdown = GracefulShutdown()
+    original_raw_ob = str(_METAR_SFO["rawOb"])
+    corrected = dict(_METAR_SFO, temp=99.0, rawOb=original_raw_ob.replace("Z 280", "Z COR 280"))
+
+    def consume_one_batch(group: str) -> None:
+        consumer = make_consumer(settings, group_id=group)
+        consumer.subscribe([SOURCE_TOPIC])
+        process_batch(_collect_batch(consumer, 10, 20.0, shutdown), engine, dlq_producer)
+        consumer.commit(asynchronous=False)
+        consumer.close()
+
+    _run_one_poll_and_produce(settings, [_METAR_SFO])
+    consume_one_batch("silver-observation")  # batch 1: the original
+    _run_one_poll_and_produce(settings, [corrected])
+    consume_one_batch("silver-observation")  # batch 2: the correction
+    _run_one_poll_and_produce(settings, [_METAR_SFO])
+    consume_one_batch("silver-observation")  # batch 3: the original again, later
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                "SELECT value, is_corrected, raw_text FROM silver.observation "
+                "WHERE station = 'KSFO' AND variable = 'temperature_2m'"
+            )
+        ).one()
+    assert row.is_corrected is True
+    assert row.value == pytest.approx(99.0 + 273.15)
+    assert " COR " in row.raw_text
+
+
+@pytest.mark.integration
 def test_malformed_message_goes_to_dlq_without_blocking_the_batch(
     stack: tuple[Settings, KafkaContainer, PostgresContainer],
 ) -> None:

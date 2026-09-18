@@ -104,10 +104,46 @@ def test_replay_only_truncates_when_asked(tmp_path: Path, monkeypatch: pytest.Mo
     replay.replay_from_bronze(TOPIC, engine, tmp_path)
     engine.begin.assert_not_called()
 
+    monkeypatch.setattr(replay, "unexplained_silver_rows", lambda topic, engine, lake: 0)
     engine = MagicMock()
     replay.replay_from_bronze(TOPIC, engine, tmp_path, truncate=True)
     executed = str(engine.begin.return_value.__enter__.return_value.execute.call_args[0][0])
     assert executed == "TRUNCATE TABLE silver.forecast"
+
+
+def test_a_truncating_rebuild_refuses_when_silver_holds_rows_the_lake_cannot_explain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(
+        replay.TARGETS, TOPIC, replay.ReplayTarget(lambda m, e, p: 0, "silver.forecast")
+    )
+    monkeypatch.setattr(replay, "unexplained_silver_rows", lambda topic, engine, lake: 7)
+    engine = MagicMock()
+
+    with pytest.raises(replay.UnsafeRebuildError, match="7 rows"):
+        replay.replay_from_bronze(TOPIC, engine, tmp_path, truncate=True)
+
+    engine.begin.assert_not_called()  # refused BEFORE deleting anything
+
+
+def test_force_accepts_the_loss_and_a_non_truncating_replay_never_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(
+        replay.TARGETS, TOPIC, replay.ReplayTarget(lambda m, e, p: 0, "silver.forecast")
+    )
+    checked: list[str] = []
+
+    def guard(topic: str, engine: Any, lake: Path) -> int:
+        checked.append(topic)
+        return 7
+
+    monkeypatch.setattr(replay, "unexplained_silver_rows", guard)
+
+    replay.replay_from_bronze(TOPIC, MagicMock(), tmp_path, truncate=True, force=True)
+    replay.replay_from_bronze(TOPIC, MagicMock(), tmp_path)  # no truncate: nothing at risk
+
+    assert checked == []  # skipped both times
 
 
 # --- offset reset targets --------------------------------------------------

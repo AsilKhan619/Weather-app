@@ -33,10 +33,17 @@ the silver rows that *exist*, and the difference in each direction.
 
 | Result | Meaning | Go to |
 | --- | --- | --- |
-| `MATCH` | Silver is exactly what a rebuild from bronze would produce. | nothing to do |
+| `MATCH` | Silver has exactly the rows a rebuild from bronze would produce (same natural keys). | nothing to do |
 | `missing from silver > 0` | A consumer lost or hasn't yet processed data. | §2, then §3 |
-| `extra in silver > 0` | Silver holds rows bronze can't explain (bad manual edit, wrong transform version, bronze sink was down while a producer ran). | §4 |
+| `extra in silver > 0` | Silver holds rows bronze can't explain: a manual insert, a transform that once emitted different keys, or **the bronze sink was down/behind while silver kept consuming** (those rows may exist *only* in silver). | **read §4 before rebuilding** |
 | `bronze unparseable > 0` | Poison messages. Not an error by itself. | §5 |
+
+**What `MATCH` does and does not prove.** It compares the *set of natural keys*.
+It catches lost rows and rows nothing can explain. It does **not** compare
+values, `is_corrected`, or `raw_text`, so a hand-edited value or a stale wrong
+value still reports `MATCH`. If you suspect value-level damage, rebuild per §4
+(that is the guarantee). Value-level checks belong with Phase 3's data-quality
+suite.
 
 Exit code is non-zero on mismatch, and every run is recorded in
 `ops.reconciliation_results`, so history is queryable:
@@ -94,10 +101,23 @@ The lake is complete history, so this always works. It uses the exact
 `load_messages` code the live consumers run - a rebuild and the live path cannot
 drift apart.
 
+**Before you truncate: make sure the lake is complete.** `TRUNCATE` destroys
+whatever bronze can't reproduce. If the bronze sink was down or behind while the
+silver consumer kept running, silver may hold rows that exist nowhere else, and
+silver's consumer offsets are already past them (only §3 could re-read them, and
+only within Kafka retention). So the rebuild **refuses to run** when silver holds
+rows the lake can't explain, and tells you why. Then either:
+
+- the messages are still in Kafka: run
+  `uv run python -m nimbus.streaming.bronze_sink --drain` to catch bronze up, run
+  `make reconcile`, and retry; or
+- they've expired and you accept losing them: add `--force`.
+
 ```bash
 # 1. stop the silver consumer for the table you're rebuilding
 # 2. rebuild. --truncate empties the table first, so the result is *exactly*
-#    what bronze explains (this also removes rows bronze can't explain):
+#    what bronze explains. (Refuses if silver holds rows bronze can't explain;
+#    --force overrides and accepts that loss.)
 make replay ARGS="bronze --topic weather.forecast.raw.v1 --truncate"
 make replay ARGS="bronze --topic weather.observation.raw.v1 --truncate"
 # 3. verify
@@ -106,8 +126,9 @@ make reconcile
 ```
 
 Without `--truncate` the replay only re-applies bronze on top of what's there:
-it repairs *missing* rows but won't remove *extra* ones. Use it when you only
-need repair, or can't afford an empty table while it runs.
+it repairs *missing* rows but won't remove *extra* ones, and it never deletes
+anything, so it needs no safety check. Use it when you only need repair, or can't
+afford an empty table while it runs.
 
 Replay reads files in write order (filenames start with a UTC timestamp), so a
 correction (COR) still lands after the report it corrects. Unparseable messages
@@ -119,7 +140,8 @@ figures will be recorded in the README in Phase 8.
 
 **This is tested**: `tests/integration/test_backfill_and_rebuild.py` truncates
 both silver tables, rebuilds from a real lake, and asserts every row (values,
-flags, lineage ids) is identical to the original.
+flags, lineage ids) is identical to the original; and asserts the rebuild refuses
+(without deleting anything) when silver holds a row the lake can't explain.
 
 ## 5. Investigating the dead-letter queue
 

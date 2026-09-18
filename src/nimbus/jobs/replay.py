@@ -28,6 +28,7 @@ from nimbus.common.db import make_engine
 from nimbus.common.kafka import KafkaMessageLike
 from nimbus.common.logging import configure_logging
 from nimbus.common.settings import Settings, get_settings
+from nimbus.jobs.reconcile import TOPIC_SPECS, diff_key_sets, silver_key_hashes, summarize_bronze
 from nimbus.streaming import forecast_silver, observation_silver
 from nimbus.streaming.bronze_reader import DEFAULT_LAKE_ROOT, iter_bronze_batches
 
@@ -59,6 +60,19 @@ class ReplayResult:
     poison: int = 0
 
 
+class UnsafeRebuildError(RuntimeError):
+    """A truncating rebuild would delete rows that exist nowhere else."""
+
+
+def unexplained_silver_rows(topic: str, engine: Engine, lake_root: Path) -> int:
+    """Silver rows the lake cannot account for. If the bronze sink was down or
+    behind while data was consumed into silver, those rows exist *only* in silver."""
+    spec = TOPIC_SPECS[topic]
+    expected = summarize_bronze(spec, lake_root).expected_keys
+    _missing, extra = diff_key_sets(expected, silver_key_hashes(engine, spec))
+    return extra
+
+
 def replay_from_bronze(
     topic: str,
     engine: Engine,
@@ -66,12 +80,28 @@ def replay_from_bronze(
     *,
     truncate: bool = False,
     batch_size: int = 50,
+    force: bool = False,
 ) -> ReplayResult:
     """Rebuild a silver table from the lake. `truncate=True` empties it first, so
     the result is exactly what bronze explains (a *rebuild*); without it the
-    replay is merely a re-apply on top of what's there."""
+    replay is merely a re-apply on top of what's there.
+
+    A truncating rebuild refuses to run if silver holds rows the lake can't
+    explain, because truncating would destroy the only copy. `force=True`
+    accepts that loss deliberately."""
     target = TARGETS[topic]
     result = ReplayResult()
+
+    if truncate and not force:
+        unexplained = unexplained_silver_rows(topic, engine, lake_root)
+        if unexplained:
+            raise UnsafeRebuildError(
+                f"{target.table} holds {unexplained:,} rows the bronze lake cannot explain; "
+                "a truncating rebuild would delete them permanently. If the bronze sink was "
+                "down or behind and Kafka still holds those messages, run "
+                "`python -m nimbus.streaming.bronze_sink --drain` first and reconcile again. "
+                "Otherwise pass --force to accept the loss."
+            )
 
     if truncate:
         logger.warning("truncating before rebuild", extra={"table": target.table})
@@ -161,6 +191,11 @@ def main() -> None:
     bronze.add_argument(
         "--truncate", action="store_true", help="empty the silver table first (a true rebuild)"
     )
+    bronze.add_argument(
+        "--force",
+        action="store_true",
+        help="truncate even if silver holds rows the lake cannot explain (they are lost)",
+    )
 
     offsets = sub.add_parser("offsets", help="reset a consumer group's offsets (group stopped)")
     offsets.add_argument("--group", required=True)
@@ -174,9 +209,16 @@ def main() -> None:
     configure_logging(settings.log_level)
 
     if args.command == "bronze":
-        replay = replay_from_bronze(
-            args.topic, make_engine(settings), args.lake_root, truncate=args.truncate
-        )
+        try:
+            replay = replay_from_bronze(
+                args.topic,
+                make_engine(settings),
+                args.lake_root,
+                truncate=args.truncate,
+                force=args.force,
+            )
+        except UnsafeRebuildError as exc:
+            raise SystemExit(f"refusing to rebuild: {exc}") from exc
         print(
             f"replayed {replay.messages:,} bronze messages: "
             f"{replay.loaded:,} loaded, {replay.poison:,} unparseable (skipped)"

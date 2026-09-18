@@ -72,18 +72,42 @@ first real `make backfill` should be watched against the actual counter.
   same report backfilled vs. live has a different `event_id`. That's harmless:
   silver's key ignores text, and the overlap upserts to a single row.
 
-## Two defects found while building this (both now regression-tested)
+## Defects found while building and reviewing this (all regression-tested)
 
 1. **Duplicate keys inside one upsert.** Postgres rejects an
    `INSERT ... ON CONFLICT DO UPDATE` that would touch a row twice in one
    statement. An original METAR and its correction landing in the same
    micro-batch, or two overlapping backfill windows, trigger it. `dedupe_on_key`
    keeps the last row per key; for observations a correction outranks its
-   original **regardless of arrival order**.
+   original within the batch.
+   *Independent review found that this alone was not enough:* the original can
+   arrive in a **later** batch (an overlapping backfill window, a live poll that
+   still lists it), and an unconditional upsert would flip the stored correction
+   back to the uncorrected report. The upsert now carries a guard
+   (`WHERE excluded.is_corrected OR NOT existing.is_corrected`), so a stored
+   correction is only replaced by another correction. The outcome no longer
+   depends on arrival order, within or across batches, and a rebuild (different
+   batch boundaries) agrees with live.
 2. **Naive datetimes are local time.** `datetime.fromisoformat("2026-09-15T00:00:00")`
    has no timezone, and `.timestamp()` silently uses the machine's zone - a
    `--from-time` replay window would shift by hours with no error. `parse_utc`
    treats offset-less input as UTC.
+
+3. **Missing values were stored as NaN, not NULL** (found in review). The
+   transforms deliberately keep missing values as NaN; `to_dict()` hands the
+   driver a real `float('nan')`, and psycopg sends it as `'NaN'::float8` -
+   verified. That passes `IS NOT NULL` and turns `avg()`/`sum()` over the column
+   into NaN, which would have silently broken Phase 3's accuracy metrics (about 5%
+   of 2024 GFS hours are missing). `chunked_upsert` now converts NaN to NULL, and
+   an integration test asserts zero NaN rows and a correct `avg()`.
+4. **A truncating rebuild could destroy the only copy of data** (found in
+   review). If the bronze sink was down while silver kept consuming, silver holds
+   rows the lake lacks, and `TRUNCATE` would delete them. The rebuild now refuses
+   when silver holds rows the lake can't explain (before deleting anything);
+   `--force` accepts the loss deliberately.
+5. **A rate-limited backfill was recorded as `success`.** `record_ingestion_run`
+   now takes an `error_message`, and an aborted run is recorded as failed with the
+   exact resume date.
 
 Also: a bulk backfill can overflow librdkafka's local queue (`BufferError`);
 `produce_json` now serves delivery callbacks and retries instead of crashing.
@@ -118,8 +142,13 @@ legitimately re-produced on every poll, and an upsert overwrites
 `source_event_id`, so distinct event ids in silver don't match bronze. Instead,
 `make reconcile` replays the lake **in memory** through the silver transform and
 compares the resulting *set of natural keys* to what silver holds, reporting rows
-missing and rows unexplained in each direction. `MATCH` means "silver is exactly
-what a rebuild would give", which is also the acceptance test for the runbook.
+missing and rows unexplained in each direction. `MATCH` means "silver has exactly
+the rows a rebuild would produce". **It does not compare values**, `is_corrected`,
+or `raw_text`: a hand-edited or stale value still reports `MATCH`. Value-level
+equality is established separately - by the integration test that rebuilds from a
+real lake and compares every column - and belongs in Phase 3's quality suite for
+ongoing use. (Checking values here would mean re-applying the loader's ordering
+rules across the whole lake in memory; deliberately not attempted.)
 
 Keys are compared as hashes of a canonical string (timestamps normalised to epoch
 seconds). This matters: pandas builds categoricals and nanosecond timestamps,
@@ -153,6 +182,7 @@ was written.
 - Live and backfilled data overlapping the same natural key upsert to whichever
   wrote last, flipping `ingestion_mode` and `source_event_id`. Values should agree;
   it isn't reconciled beyond that.
+- Reconciliation checks keys, not values (see above).
 - Replay processes bronze file-by-file in order; it does not globally re-sort by
   Kafka timestamp. That is correct for one sink and monotonic restarts (write order
   is arrival order) but would not be for multiple concurrent sinks.

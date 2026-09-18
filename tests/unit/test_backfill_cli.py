@@ -1,8 +1,12 @@
 from datetime import date
+from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
 from nimbus.common.config import ModelsConfig, ModelSpec
+from nimbus.ingestion.backfill import BackfillResult
+from nimbus.jobs import backfill as backfill_job
 from nimbus.jobs.backfill import FULL_HISTORY_START, estimate_forecast_calls, resolve_window
 
 TODAY = date(2026, 9, 18)
@@ -58,3 +62,42 @@ def test_a_full_history_exceeds_one_days_budget() -> None:
     full = estimate_forecast_calls(_models(3), 25, date(2024, 1, 1), date(2026, 9, 17))
 
     assert full > 10_000  # so `make backfill` has to span two days; the CLI warns and resumes
+
+
+def test_a_rate_limited_run_is_recorded_as_failed_with_the_resume_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        backfill_job,
+        "backfill_forecasts",
+        lambda *a, **k: BackfillResult(produced=4, failed=0, aborted_at=date(2025, 3, 1)),
+    )
+    monkeypatch.setattr(
+        backfill_job,
+        "record_ingestion_run",
+        lambda engine, source, mode, started, produced, failed, error_message=None: recorded.append(
+            {"source": source, "produced": produced, "failed": failed, "error": error_message}
+        ),
+    )
+
+    ok = backfill_job.run(
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        [],
+        _models(),
+        date(2025, 1, 1),
+        date(2025, 6, 1),
+        "forecasts",
+    )
+
+    assert ok is False  # the CLI exits non-zero
+    assert recorded == [
+        {
+            "source": "forecast_backfill",
+            "produced": 4,
+            "failed": 0,
+            "error": "rate limited; resume with --start-date 2025-03-01",
+        }
+    ]
