@@ -170,8 +170,9 @@ sink and both silver consumers to completion, then `make reconcile`.
 
 **Rate limits (Open-Meteo, non-commercial): 600 calls/min, 10,000/day.** Requests
 are weighted by volume (each 10 variables x 14 days per location counts as one).
-A 7-day chunk of forecasts for 25 locations is ~35 calls, so the job waits ~4 s
-between requests. `make demo` (30 days) costs ~450 calls; a full history is
+Forecast requests are sent 10 locations at a time (larger requests come back
+truncated - ADR 0004); a 7-day chunk of 10 locations is ~14 calls, so the job
+waits ~2 s between requests. `make demo` (30 days) costs ~450 calls; a full history is
 ~15,000 and **must span two days**. The job prints its estimate up front, and if the provider
 returns 429 it stops and prints the exact date to resume from:
 

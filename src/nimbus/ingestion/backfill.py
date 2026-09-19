@@ -33,11 +33,18 @@ logger = logging.getLogger(__name__)
 FORECAST_TOPIC = "weather.forecast.raw.v1"
 
 # Open-Meteo bills by data volume (>10 variables or >14 days per location count
-# as multiple calls, fractionally) against 600/minute and 10,000/day. One
-# 7-day chunk of 28 variables for 25 locations is ~35 calls, so ~4s between
-# requests keeps under the per-minute cap; a full history spans two days.
+# as multiple calls, fractionally) against 600/minute and 10,000/day.
+#
+# Request SIZE is a second, separate limit, found by the first real run (ADR
+# 0004): a 25-location, 28-column, 7-day request returns ~700 KB and the server
+# truncates the body mid-JSON (HTTP 200, invalid JSON) for the larger models.
+# Splitting locations into batches of 10 keeps each response ~250 KB. Weighted
+# cost is unchanged by batching (it scales with locations x variables x days);
+# 10 locations x 28 columns x 7 days is ~14 calls, so ~2s between requests keeps
+# well under the per-minute cap (~420 calls/min).
 DEFAULT_FORECAST_CHUNK_DAYS = 7
-DEFAULT_FORECAST_THROTTLE_SECONDS = 4.0
+DEFAULT_FORECAST_LOCATION_BATCH = 10
+DEFAULT_FORECAST_THROTTLE_SECONDS = 2.0
 DEFAULT_OBSERVATION_CHUNK_DAYS = 90
 DEFAULT_OBSERVATION_THROTTLE_SECONDS = 0.5
 
@@ -62,6 +69,13 @@ def chunk_dates(start: date, end: date, chunk_days: int) -> Iterator[tuple[date,
         cursor = last + timedelta(days=1)
 
 
+def location_batches[T](items: list[T], size: int) -> Iterator[list[T]]:
+    if size < 1:
+        raise ValueError("batch size must be >= 1")
+    for start in range(0, len(items), size):
+        yield items[start : start + size]
+
+
 def _is_rate_limited(exc: Exception) -> bool:
     return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429
 
@@ -75,74 +89,87 @@ def backfill_forecasts(
     end: date,
     *,
     chunk_days: int = DEFAULT_FORECAST_CHUNK_DAYS,
+    location_batch_size: int = DEFAULT_FORECAST_LOCATION_BATCH,
     throttle_seconds: float = DEFAULT_FORECAST_THROTTLE_SECONDS,
     sleep: Callable[[float], None] = time.sleep,
 ) -> BackfillResult:
-    """Chunk-outer, model-inner, so `aborted_at` is a clean resume point: every
-    model finished every chunk before it."""
+    """Chunk-outer, then model, then location batch, so `aborted_at` is a clean
+    resume point: every model and location finished every chunk before it. A
+    failed request loses only its own (chunk, model, location batch); the rest
+    still land."""
     result = BackfillResult()
-    coordinates = [(loc.latitude, loc.longitude) for loc in locations]
     lead_key = ",".join(str(n) for n in models.backfill_lead_days)
 
     for chunk_start, chunk_end in chunk_dates(start, end, chunk_days):
         for model in models.models:
-            try:
-                responses = fetch_previous_runs(
-                    client,
-                    model.id,
-                    coordinates,
-                    models.variables,
-                    models.backfill_lead_days,
-                    chunk_start,
-                    chunk_end,
-                )
-                if len(responses) != len(locations):
-                    raise ValueError(f"expected {len(locations)} responses, got {len(responses)}")
-            except Exception as exc:
-                if _is_rate_limited(exc):
-                    logger.error("rate limited; stopping", extra={"resume_from": str(chunk_start)})
-                    result.aborted_at = chunk_start
-                    return result
-                logger.exception(
-                    "forecast backfill chunk failed",
-                    extra={"model": model.id, "chunk_start": str(chunk_start)},
-                )
-                result.failed += 1
-                sleep(throttle_seconds)
-                continue
+            for batch in location_batches(locations, location_batch_size):
+                try:
+                    responses = fetch_previous_runs(
+                        client,
+                        model.id,
+                        [(loc.latitude, loc.longitude) for loc in batch],
+                        models.variables,
+                        models.backfill_lead_days,
+                        chunk_start,
+                        chunk_end,
+                    )
+                    if len(responses) != len(batch):
+                        raise ValueError(f"expected {len(batch)} responses, got {len(responses)}")
+                except Exception as exc:
+                    if _is_rate_limited(exc):
+                        logger.error(
+                            "rate limited; stopping", extra={"resume_from": str(chunk_start)}
+                        )
+                        result.aborted_at = chunk_start
+                        return result
+                    logger.exception(
+                        "forecast backfill request failed",
+                        extra={
+                            "model": model.id,
+                            "chunk_start": str(chunk_start),
+                            "locations": [loc.id for loc in batch],
+                        },
+                    )
+                    result.failed += 1
+                    sleep(throttle_seconds)
+                    continue
 
-            for location, api_response in zip(locations, responses, strict=True):
-                event_id = compute_event_id(
-                    FORECAST_BACKFILL_EVENT_TYPE,
-                    model.id,
-                    location.id,
-                    chunk_start.isoformat(),
-                    chunk_end.isoformat(),
-                    lead_key,
+                for location, api_response in zip(batch, responses, strict=True):
+                    event_id = compute_event_id(
+                        FORECAST_BACKFILL_EVENT_TYPE,
+                        model.id,
+                        location.id,
+                        chunk_start.isoformat(),
+                        chunk_end.isoformat(),
+                        lead_key,
+                    )
+                    envelope = EventEnvelope[ForecastBackfillRawPayload](
+                        event_id=event_id,
+                        source="forecast_backfill",
+                        event_type=FORECAST_BACKFILL_EVENT_TYPE,
+                        produced_at=datetime.now(UTC),
+                        ingestion_mode="backfill",
+                        payload=ForecastBackfillRawPayload(
+                            model=model.id,
+                            location_id=location.id,
+                            start_date=chunk_start,
+                            end_date=chunk_end,
+                            api_response=api_response,
+                        ),
+                    )
+                    produce_json(
+                        producer, FORECAST_TOPIC, location.id, envelope.model_dump(mode="json")
+                    )
+                    result.produced += 1
+                logger.info(
+                    "backfilled forecast chunk",
+                    extra={
+                        "model": model.id,
+                        "chunk_start": str(chunk_start),
+                        "locations": len(batch),
+                    },
                 )
-                envelope = EventEnvelope[ForecastBackfillRawPayload](
-                    event_id=event_id,
-                    source="forecast_backfill",
-                    event_type=FORECAST_BACKFILL_EVENT_TYPE,
-                    produced_at=datetime.now(UTC),
-                    ingestion_mode="backfill",
-                    payload=ForecastBackfillRawPayload(
-                        model=model.id,
-                        location_id=location.id,
-                        start_date=chunk_start,
-                        end_date=chunk_end,
-                        api_response=api_response,
-                    ),
-                )
-                produce_json(
-                    producer, FORECAST_TOPIC, location.id, envelope.model_dump(mode="json")
-                )
-                result.produced += 1
-            logger.info(
-                "backfilled forecast chunk",
-                extra={"model": model.id, "chunk_start": str(chunk_start)},
-            )
-            sleep(throttle_seconds)
+                sleep(throttle_seconds)
 
     return result
 

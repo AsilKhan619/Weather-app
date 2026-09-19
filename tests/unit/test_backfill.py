@@ -7,7 +7,13 @@ import httpx
 import pytest
 
 from nimbus.common.config import Location, ModelsConfig, ModelSpec
-from nimbus.ingestion.backfill import backfill_forecasts, backfill_observations, chunk_dates
+from nimbus.ingestion.backfill import (
+    backfill_forecasts,
+    backfill_observations,
+    chunk_dates,
+    location_batches,
+)
+from nimbus.ingestion.open_meteo import fetch_previous_runs
 
 
 def _locations() -> list[Location]:
@@ -205,6 +211,116 @@ def test_rate_limiting_aborts_and_reports_the_date_to_resume_from(
 
     assert result.aborted_at == date(2024, 6, 8)  # first chunk done, second refused
     assert result.produced == 4  # 2 models x 2 locations for the first chunk only
+
+
+# --- request batching (found by the first real run, ADR 0004) --------------
+
+
+def _many_locations(n: int) -> list[Location]:
+    return [
+        Location(
+            id=f"loc-{i:02d}",
+            name=f"L{i}",
+            climate="x",
+            latitude=float(i),
+            longitude=float(i),
+            elevation_m=1,
+            timezone="UTC",
+            station=f"K{i:03d}",
+        )
+        for i in range(n)
+    ]
+
+
+def test_location_batches_split_evenly_with_a_short_last_batch() -> None:
+    sizes = [len(b) for b in location_batches(list(range(25)), 10)]
+
+    assert sizes == [10, 10, 5]
+    with pytest.raises(ValueError):
+        list(location_batches([1], 0))
+
+
+def test_a_25_location_request_is_split_so_no_response_is_oversized() -> None:
+    """A single 25-location, 28-column, 7-day request returned ~700 KB, which
+    Open-Meteo truncated mid-JSON. Each request must stay small."""
+    sizes: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sizes.append(len(request.url.params["latitude"].split(",")))
+        return _api_ok(request)
+
+    models = _models()
+    models.models = models.models[:1]
+    producer = MagicMock()
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result = backfill_forecasts(
+            client,
+            producer,
+            _many_locations(25),
+            models,
+            date(2024, 6, 1),
+            date(2024, 6, 7),
+            sleep=lambda s: None,
+        )
+
+    assert sizes == [10, 10, 5]
+    assert result.produced == 25  # every location still gets its event
+    assert {b["payload"]["location_id"] for b in _payloads(producer)} == {  # type: ignore[index]
+        f"loc-{i:02d}" for i in range(25)
+    }
+
+
+def test_one_failing_batch_loses_only_its_own_locations() -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            return httpx.Response(404, text="nope")  # the second batch of 10
+        return _api_ok(request)
+
+    models = _models()
+    models.models = models.models[:1]
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result = backfill_forecasts(
+            client,
+            MagicMock(),
+            _many_locations(25),
+            models,
+            date(2024, 6, 1),
+            date(2024, 6, 7),
+            sleep=lambda s: None,
+        )
+
+    assert result.failed == 1
+    assert result.produced == 15  # batches of 10 + 5 landed; the middle 10 did not
+
+
+def test_a_truncated_response_body_is_retried_and_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(time, "sleep", lambda s: None)  # skip tenacity's backoff waits
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return httpx.Response(200, content=b'{"hourly": {"time": ["2024-06-01T00:00", "20')
+        return httpx.Response(200, json={"hourly": {"time": []}})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result = fetch_previous_runs(
+            client,
+            "gfs_seamless",
+            [(1.0, 2.0)],
+            ["temperature_2m"],
+            [1],
+            date(2024, 6, 1),
+            date(2024, 6, 7),
+        )
+
+    assert attempts["n"] == 2
+    assert result == [{"hourly": {"time": []}}]
 
 
 # --- observations ----------------------------------------------------------

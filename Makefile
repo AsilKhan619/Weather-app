@@ -39,17 +39,24 @@ reconcile:
 
 DEMO_DAYS ?= 30
 
+# Produce history, then ALWAYS land whatever was produced (drain + reconcile),
+# and only then report the producer's status. A partially failed backfill (say a
+# rate limit) must not strand the events it did produce in Kafka.
+define LOAD_HISTORY
+@status=0; \
+uv run python -m nimbus.jobs.backfill $(1) || status=$$?; \
+$(MAKE) drain && $(MAKE) reconcile; rc=$$?; \
+if [ $$status -ne 0 ]; then echo "backfill reported failures (exit $$status); landed what it produced"; exit $$status; fi; \
+exit $$rc
+endef
+
 demo:
-	uv run python -m nimbus.jobs.backfill --days $(DEMO_DAYS)
-	$(MAKE) drain
-	$(MAKE) reconcile
+	$(call LOAD_HISTORY,--days $(DEMO_DAYS))
 	@echo "Demo data loaded into bronze and silver. Query it with:"
 	@echo "  docker exec nimbus-postgres psql -U nimbus -d nimbus -c 'select count(*) from silver.forecast'"
 
 backfill:
-	uv run python -m nimbus.jobs.backfill --full
-	$(MAKE) drain
-	$(MAKE) reconcile
+	$(call LOAD_HISTORY,--full)
 
 test:
 	uv run pytest tests/unit

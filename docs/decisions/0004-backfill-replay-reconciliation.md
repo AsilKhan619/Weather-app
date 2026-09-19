@@ -16,8 +16,10 @@ Verified directly (Sept 2026):
 - `<variable>_previous_dayN` columns with **different N combine in one request**,
   and comma-separated `latitude`/`longitude` batches locations (a JSON array, one
   object per location, in input order) - same as the Single Runs API.
-- **A full year is accepted in a single request** (8,784 hours returned), so
-  chunking is a message-size choice, not an API limit. I chunk at 7 days.
+- **A full year is accepted in a single request for one location** (8,784
+  hours returned). This turned out to be the wrong thing to generalise from:
+  size limits bite when *locations* multiply (see "What the first real run
+  found"). I chunk at 7 days.
 - Archive depth varies by model. For GFS, `2023-06-01` returned real values and
   `2020-01-01` returned all nulls; ~5% of hours in 2024 were null. **Only GFS was
   probed** - ECMWF and ICON depth is unverified. Nulls flow through as NaN (the
@@ -39,7 +41,10 @@ per location counts as one call, fractionally, against **600/min and 10,000/day*
 (non-commercial). One 7-day chunk for 25 locations x 28 variable-lead columns is
 25 x 2.8 x 0.5 = **35 calls**, so:
 
-- throttle ~4s between requests (15/min x 35 = 525 calls/min, under the 600 cap);
+- throttle between requests so weighted cost stays under the cap. With 10
+  locations per request (see below) one request is ~14 calls, so 2s spacing
+  is ~420 calls/min. (The first design sent all 25 locations in one ~35-call
+  request with 4s spacing; that shape is what failed.)
 - `make demo` (30 days) is ~450 calls; a full history since 2024-01-01 is
   ~15,000, **more than one day's budget**, so it must span two days;
 - on HTTP 429 the job stops and prints the date to resume from
@@ -49,6 +54,40 @@ per location counts as one call, fractionally, against **600/min and 10,000/day*
 The CLI prints its estimate up front and warns above 90% of a day's budget.
 Estimating from the documented weighting is not the same as measuring it; the
 first real `make backfill` should be watched against the actual counter.
+
+## What the first real run found
+
+The first end-to-end run of `make up && make demo` from a clean checkout, on a
+GitHub Actions runner against the live providers (30 days, 25 locations,
+workflow `live-demo.yml`). Everything above had been verified against live
+*responses*, but not at full scale, and the run found what the recorded-fixture
+tests structurally could not:
+
+- **`make up` from a fresh clone worked** - after two fixes it needed (the
+  `.env.example` Kafka port pointed at 9092 while compose publishes 29092, and
+  migrations raced Postgres startup because `up -d` didn't wait for health).
+- **IEM was fast and reliable:** all 25 stations, 27,094 reports (719-1,580 per
+  station over 30 days), in 23 seconds, zero failures.
+- **Open-Meteo: 10 of 15 forecast requests succeeded, 5 failed.** The failures
+  were not timeouts and not rate limits: the server returned **HTTP 200 with a
+  body truncated mid-JSON** (`JSONDecodeError` at character 692,306). A
+  25-location x 28-column x 7-day response is ~700 KB. ECMWF's responses fit;
+  GFS and ICON's did not. So request *size* is a limit independent of the
+  weighted-call budget I had designed around.
+- **A truncated body wasn't retried** (the connection "succeeded"), and
+  **the non-zero exit stopped `make demo` before `drain`**, so the 10 chunks
+  (250 events) that *did* succeed sat in Kafka and nothing landed in silver.
+
+Fixes: locations are sent in batches of 10 (by proportion ~280 KB per response,
+an estimate rather than a measurement), a truncated body is retried, and
+`make demo`/`make backfill` now always drain and reconcile what was produced
+before reporting the producer's failure. A failed batch loses only its own
+(chunk, model, locations); the rest land. Event ids are unchanged, so batching
+is idempotent with anything already produced.
+
+**Still open:** a run that completes cleanly. The batched shape has not yet
+been run against the live API - unit tests only prove the batching logic, not
+that 10 locations reliably stays under the server's limit.
 
 ## Observation backfill: IEM ASOS
 

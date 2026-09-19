@@ -3,6 +3,7 @@ with exponential backoff and jitter). Only covers genuine transient failures
 (network errors, 429, 5xx) - each client still owns its own "success but not
 what we wanted" logic, e.g. Open-Meteo's HTTP 400 for a not-yet-available run."""
 
+import json
 from collections.abc import Callable
 
 import httpx
@@ -11,6 +12,11 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_random_
 
 def is_retryable_http_error(exc: BaseException) -> bool:
     if isinstance(exc, httpx.TransportError):
+        return True
+    # HTTP 200 with a body cut off mid-JSON: seen from Open-Meteo on oversized
+    # responses (ADR 0004). The connection "succeeded", so it isn't a transport
+    # error, but the request is worth retrying.
+    if isinstance(exc, json.JSONDecodeError):
         return True
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code == 429 or exc.response.status_code >= 500
