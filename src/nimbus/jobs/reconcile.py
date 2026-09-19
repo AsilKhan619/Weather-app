@@ -17,6 +17,7 @@ import logging
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -24,9 +25,11 @@ import pandas as pd
 from pydantic import ValidationError
 from sqlalchemy import Engine, text
 
+from nimbus.common.config import load_storage_config
 from nimbus.common.db import make_engine
 from nimbus.common.logging import configure_logging
 from nimbus.common.settings import get_settings
+from nimbus.jobs.manage_partitions import retention_cutoff
 from nimbus.quality.gate import gate_frame
 from nimbus.quality.schemas import (
     TableChecks,
@@ -50,6 +53,8 @@ class TopicSpec:
     to_frame: Callable[[bytes], pd.DataFrame]
     checks: Callable[[], TableChecks]
     produced_sources: tuple[str, ...]
+    # Column that retention drops by, if the table has a retention policy.
+    retention_column: str | None = None
 
 
 TOPIC_SPECS: dict[str, TopicSpec] = {
@@ -61,6 +66,7 @@ TOPIC_SPECS: dict[str, TopicSpec] = {
         to_frame=forecast_silver.message_to_frame,
         checks=silver_forecast_gate,
         produced_sources=("forecast_producer", "forecast_backfill"),
+        retention_column="valid_time",
     ),
     "weather.observation.raw.v1": TopicSpec(
         topic="weather.observation.raw.v1",
@@ -125,7 +131,9 @@ class BronzeSummary:
     expected_keys: np.ndarray
 
 
-def summarize_bronze(spec: TopicSpec, lake_root: Path = DEFAULT_LAKE_ROOT) -> BronzeSummary:
+def summarize_bronze(
+    spec: TopicSpec, lake_root: Path = DEFAULT_LAKE_ROOT, valid_from: datetime | None = None
+) -> BronzeSummary:
     """Replay the lake through the silver transform *in memory* - nothing is
     written - and collect the unique silver keys it would produce."""
     messages = unparseable = 0
@@ -159,6 +167,10 @@ def summarize_bronze(spec: TopicSpec, lake_root: Path = DEFAULT_LAKE_ROOT) -> Br
             batch_frame = gate.clean
             if batch_frame.empty:
                 continue
+        if valid_from is not None and spec.retention_column is not None:
+            batch_frame = batch_frame[batch_frame[spec.retention_column] >= valid_from]
+            if batch_frame.empty:
+                continue
         event_ids.update(batch_frame["source_event_id"].astype(str).unique())
         hash_chunks.append(key_hashes(batch_frame, spec.key_columns, spec.time_columns))
 
@@ -166,13 +178,23 @@ def summarize_bronze(spec: TopicSpec, lake_root: Path = DEFAULT_LAKE_ROOT) -> Br
     return BronzeSummary(messages, len(event_ids), unparseable, expected)
 
 
-def silver_key_hashes(engine: Engine, spec: TopicSpec, chunksize: int = 200_000) -> np.ndarray:
+def silver_key_hashes(
+    engine: Engine,
+    spec: TopicSpec,
+    chunksize: int = 200_000,
+    valid_from: datetime | None = None,
+) -> np.ndarray:
     columns = ", ".join(spec.key_columns)
     chunks: list[np.ndarray] = []
     with engine.connect() as conn:
         # Table and column names come from TOPIC_SPECS constants above, never input.
-        query = text(f"SELECT {columns} FROM {spec.table}")
-        for chunk in pd.read_sql(query, conn, chunksize=chunksize):
+        where = ""
+        params: dict[str, datetime] = {}
+        if valid_from is not None and spec.retention_column is not None:
+            where = f" WHERE {spec.retention_column} >= :valid_from"
+            params = {"valid_from": valid_from}
+        query = text(f"SELECT {columns} FROM {spec.table}{where}")
+        for chunk in pd.read_sql(query, conn, params=params, chunksize=chunksize):
             chunks.append(key_hashes(chunk, spec.key_columns, spec.time_columns))
     return np.unique(np.concatenate(chunks)) if chunks else np.array([], np.uint64)
 
@@ -190,10 +212,15 @@ def produced_message_count(engine: Engine, spec: TopicSpec) -> int:
 
 
 def reconcile_topic(
-    engine: Engine, spec: TopicSpec, lake_root: Path = DEFAULT_LAKE_ROOT
+    engine: Engine,
+    spec: TopicSpec,
+    lake_root: Path = DEFAULT_LAKE_ROOT,
+    valid_from: datetime | None = None,
 ) -> ReconciliationResult:
-    bronze = summarize_bronze(spec, lake_root)
-    silver = silver_key_hashes(engine, spec)
+    """`valid_from` restricts both sides to the retention window, so partitions dropped
+    on purpose (config/storage.yaml) are not reported as lost data."""
+    bronze = summarize_bronze(spec, lake_root, valid_from)
+    silver = silver_key_hashes(engine, spec, valid_from=valid_from)
     missing, extra = diff_key_sets(bronze.expected_keys, silver)
     return ReconciliationResult(
         topic=spec.topic,
@@ -262,7 +289,10 @@ def main() -> None:
     engine = make_engine(settings)
 
     specs = [TOPIC_SPECS[args.topic]] if args.topic else list(TOPIC_SPECS.values())
-    results = [reconcile_topic(engine, spec, args.lake_root) for spec in specs]
+    cutoff = retention_cutoff(load_storage_config(), datetime.now(UTC).date())
+    if cutoff is not None:
+        print(f"retention window: comparing silver.forecast from {cutoff:%Y-%m-%d} only")
+    results = [reconcile_topic(engine, spec, args.lake_root, cutoff) for spec in specs]
     for result in results:
         record_result(engine, result)
         print(format_result(result))

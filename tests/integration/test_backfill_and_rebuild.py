@@ -287,8 +287,10 @@ def test_reconciliation_detects_missing_and_unexplained_rows(loaded: Loaded) -> 
     with engine.begin() as conn:  # lose a row
         conn.execute(
             text(
-                "DELETE FROM silver.forecast WHERE ctid IN "
-                "(SELECT ctid FROM silver.forecast LIMIT 1)"
+                "DELETE FROM silver.forecast WHERE "
+                "(model, location_id, init_time, valid_time, variable) = "
+                "(SELECT model, location_id, init_time, valid_time, variable "
+                "FROM silver.forecast LIMIT 1)"
             )
         )
     lost = reconcile_topic(engine, forecast_spec, loaded.lake)
@@ -320,3 +322,44 @@ def test_reconciliation_detects_missing_and_unexplained_rows(loaded: Loaded) -> 
     # --force is the deliberate acceptance of that loss - and leaves the module's data consistent
     replay_from_bronze(FORECAST_TOPIC, engine, loaded.lake, truncate=True, force=True)
     assert reconcile_topic(engine, forecast_spec, loaded.lake).matched
+
+
+@pytest.mark.integration
+def test_trace_finds_real_events_in_bronze_and_silver(loaded: Loaded) -> None:
+    from nimbus.jobs.trace import format_trace, sample_event_id, trace_event
+
+    for topic, table in (
+        (FORECAST_TOPIC, "silver.forecast"),
+        (OBSERVATION_TOPIC, "silver.observation"),
+    ):
+        event_id = sample_event_id(topic, loaded.lake)
+        assert event_id is not None
+
+        trace = trace_event(loaded.engine, event_id, loaded.lake)
+
+        assert trace.bronze and trace.bronze[0].topic == topic
+        assert trace.silver_table == table
+        assert trace.silver_expected > 0
+        # every row the event yields is in silver, whichever event wrote it last
+        assert sum(trace.silver_by_event.values()) == trace.silver_expected
+        assert event_id in format_trace(trace)
+
+    unknown = trace_event(loaded.engine, "no-such-event", loaded.lake)
+    assert unknown.bronze == []
+    assert "NOT FOUND" in format_trace(unknown)
+
+
+@pytest.mark.integration
+def test_reconciliation_compares_only_the_retention_window(loaded: Loaded) -> None:
+    from datetime import UTC, datetime
+
+    spec = TOPIC_SPECS[FORECAST_TOPIC]
+
+    everything = reconcile_topic(loaded.engine, spec, loaded.lake)
+    assert everything.matched and everything.silver_rows > 0
+
+    # a window that starts after all the data: both sides are empty, so still a match
+    future = datetime(2100, 1, 1, tzinfo=UTC)
+    windowed = reconcile_topic(loaded.engine, spec, loaded.lake, valid_from=future)
+    assert (windowed.expected_silver_rows, windowed.silver_rows) == (0, 0)
+    assert windowed.matched

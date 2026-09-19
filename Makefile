@@ -1,4 +1,4 @@
-.PHONY: up down logs demo backfill drain reconcile gold quality test test-integration lint typecheck eval trace replay sync migrate init-topics produce-forecasts produce-observations
+.PHONY: up down logs demo backfill drain reconcile gold quality partitions test test-integration lint typecheck eval trace replay sync migrate init-topics produce-forecasts produce-observations
 
 sync:
 	uv sync --all-extras
@@ -47,6 +47,11 @@ gold:
 quality:
 	uv run python -m nimbus.jobs.run_quality $(ARGS)
 
+# Create upcoming monthly silver.forecast partitions; drop months past the retention
+# window (config/storage.yaml; off by default). `make partitions ARGS=--dry-run` previews.
+partitions:
+	uv run python -m nimbus.jobs.manage_partitions $(ARGS)
+
 DEMO_DAYS ?= 30
 
 # Produce history, then ALWAYS land whatever was produced (drain + reconcile + gold + quality),
@@ -83,8 +88,9 @@ typecheck:
 eval:
 	uv run python -m nimbus.jobs.run_eval
 
+# `make trace EVENT_ID=<id>`, or `make trace SAMPLE=observation` to pick a recent event.
 trace:
-	uv run python -m nimbus.jobs.trace --event-id $(EVENT_ID)
+	uv run python -m nimbus.jobs.trace $(if $(EVENT_ID),--event-id $(EVENT_ID),--sample $(or $(SAMPLE),forecast))
 
 replay:
 	uv run python -m nimbus.jobs.replay $(ARGS)

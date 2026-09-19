@@ -6,7 +6,7 @@ Runs entirely free and self-hosted: every data source (Open-Meteo, aviationweath
 
 Full requirements: [`docs/PROJECT_BRIEF.md`](docs/PROJECT_BRIEF.md). Phase-by-phase progress: [`docs/PLAN.md`](docs/PLAN.md). Design decisions: [`docs/decisions/`](docs/decisions/).
 
-**Status: Phase 2 (observations and backfill) implemented and run against the live providers for four months.** Live forecasts and METAR observations flow through Kafka into a Parquet bronze lake and validated, idempotent Postgres silver tables for 25 locations. Historical forecasts (Open-Meteo Previous Runs) and observations (IEM ASOS) load through the same topics, and silver can be rebuilt from the lake — see [`docs/runbook.md`](docs/runbook.md). `make demo` has been run from a clean checkout on a GitHub runner for 120 days: 6,048,000 forecast and 435,832 observation rows across 25 locations, reconciled with `MATCH` (details and timings in [ADR 0004](docs/decisions/0004-backfill-replay-reconciliation.md)). The full history via `make backfill` has not been run. Gold verification, the dashboard, briefings and the agent come in later phases.
+**Status: Phase 3 (gold layer and data quality) implemented; Phases 0-2 run against the live providers for four months.** Live forecasts and METAR observations flow through Kafka into a Parquet bronze lake and validated, idempotent Postgres silver tables for 25 locations. Historical forecasts (Open-Meteo Previous Runs) and observations (IEM ASOS) load through the same topics, and silver can be rebuilt from the lake — see [`docs/runbook.md`](docs/runbook.md). `make demo` has been run from a clean checkout on a GitHub runner for 120 days: 6,048,000 forecast and 435,832 observation rows across 25 locations, reconciled with `MATCH` (details and timings in [ADR 0004](docs/decisions/0004-backfill-replay-reconciliation.md)). The full history via `make backfill` has not been run. On top of silver, `make gold` scores every forecast against the nearest observation (`merge_asof`) into incremental, idempotent gold tables and a model leaderboard; pandera checks gate every load (`make quality`), `make trace` follows one event from API request to gold metric, and `silver.forecast` is partitioned monthly - see [ADR 0005](docs/decisions/0005-phase3-gold-quality-lineage.md). The dashboard, briefings and the agent come in later phases.
 
 ## Architecture
 
@@ -65,6 +65,10 @@ Other targets:
 make backfill               # everything since 2024-01-01 (needs two days of API budget)
 make drain                  # run the consumers until caught up, then exit
 make reconcile              # produced -> bronze -> silver check
+make gold                   # verification + accuracy + leaderboard (incremental, idempotent)
+make quality                # pandera checks + freshness -> ops.quality_results
+make trace SAMPLE=forecast  # follow one event bronze -> silver -> gold (or EVENT_ID=...)
+make partitions             # create upcoming monthly silver.forecast partitions
 make produce-forecasts      # live forecast producer (Ctrl+C to stop)
 make produce-observations   # live METAR producer (Ctrl+C to stop)
 make test                   # unit tests
@@ -72,7 +76,7 @@ make test-integration       # real Kafka + Postgres via Testcontainers
 make lint && make typecheck
 ```
 
-`make eval`, `make trace` land in Phases 3 and 6. Operational procedures (recovering a crashed consumer, rebuilding silver from bronze, the DLQ, rate limits) are in [`docs/runbook.md`](docs/runbook.md).
+`make eval` lands in Phase 6. Operational procedures (recovering a crashed consumer, rebuilding silver from bronze, the DLQ, rate limits) are in [`docs/runbook.md`](docs/runbook.md).
 
 ## Data sources and attribution
 

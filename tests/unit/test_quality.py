@@ -118,6 +118,18 @@ def test_pressure_left_in_hpa_is_caught() -> None:
     assert validate_frame(frame, forecast_checks(VARIABLES)).has_blocking_failures
 
 
+def test_a_forecast_valid_before_its_init_time_only_warns() -> None:
+    """Found by CI: the fixture-based integration tests pair a recent run with fixed
+    valid times. A negative lead is odd but harmless (gold never scores it), so it is
+    flagged, not quarantined."""
+    frame = _forecasts()
+    frame["lead_hours"] = pd.array([-48, -48], dtype="int32")
+    validation = validate_frame(frame, forecast_checks(VARIABLES))
+
+    assert not validation.has_blocking_failures
+    assert "lead_hours:lead_not_negative" in {r.check for r in validation.failed}
+
+
 def test_infinite_value_is_blocking_but_nan_is_not() -> None:
     frame = _forecasts({"temperature_2m": math.inf, "pressure_msl": math.nan})
     failed = _failed(frame, forecast_checks(VARIABLES))

@@ -1,0 +1,15 @@
+# Storage lifecycle for silver.forecast (brief section 7, ADR 0005).
+
+# silver.forecast is range-partitioned by valid_time, one partition per month. The
+# migration creates 2024-01..2027-12 (the Previous Runs archive starts in January
+# 2024); `make partitions` keeps this many months ahead of today so live forecasts
+# never land in the default partition.
+partitions_ahead_months: 6
+
+# How many whole months of forecast rows to keep, counting back from the current
+# month. null keeps everything. Dropping a partition is instant (no vacuum) and is
+# safe because gold.accuracy_daily already holds the metrics and the bronze lake
+# holds the raw events, so a replay can restore any dropped month. Off by default:
+# the demo dataset is the full history. When set, `make reconcile` compares only the
+# retained window, so an intentional drop is not reported as data loss.
+forecast_retention_months: null

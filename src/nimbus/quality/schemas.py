@@ -99,13 +99,7 @@ def forecast_checks(variables: Sequence[VariableSpec], *, unique: bool = False) 
             "value": pa.Column(
                 "float64", nullable=True, checks=pa.Check(_finite_or_missing, name="finite")
             ),
-            "lead_hours": pa.Column(
-                nullable=False,
-                checks=[
-                    pa.Check(_is_integer, name="integer"),
-                    pa.Check(lambda s: s >= 0, name="lead_not_negative"),
-                ],
-            ),
+            "lead_hours": pa.Column(nullable=False, checks=pa.Check(_is_integer, name="integer")),
         },
         checks=[
             _known_variable(variables),
@@ -114,8 +108,11 @@ def forecast_checks(variables: Sequence[VariableSpec], *, unique: bool = False) 
         unique=_unique(key, unique),
         report_duplicates="all",
     )
+    # A valid_time before init_time is odd but harmless (the API's hourly array can
+    # start before the run, and gold only scores lead >= min_lead_hours), so it is
+    # flagged, not quarantined.
     warning = pa.DataFrameSchema(
-        {},
+        {"lead_hours": pa.Column(checks=pa.Check(lambda s: s >= 0, name="lead_not_negative"))},
         checks=[_range_check(variables, hard=False, value_column="value", name="plausible_range")],
     )
     return TableChecks("silver.forecast", blocking, warning)

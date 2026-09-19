@@ -1,4 +1,5 @@
-"""Typed loaders for the YAML files under config/ (locations, models, variables, gold, quality)."""
+"""Typed loaders for the YAML files under config/: locations, models, variables, gold,
+quality and storage."""
 
 from pathlib import Path
 
@@ -77,3 +78,13 @@ class QualityConfig(BaseModel):
 def load_quality_config(path: Path = CONFIG_DIR / "quality.yaml") -> QualityConfig:
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     return QualityConfig.model_validate(raw)
+
+
+class StorageConfig(BaseModel):
+    partitions_ahead_months: int
+    forecast_retention_months: int | None = None
+
+
+def load_storage_config(path: Path = CONFIG_DIR / "storage.yaml") -> StorageConfig:
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return StorageConfig.model_validate(raw)

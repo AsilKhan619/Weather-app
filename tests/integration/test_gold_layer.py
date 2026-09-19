@@ -386,3 +386,75 @@ def test_freshness_flags_quiet_stations_and_sources(engine: Engine) -> None:
     later = check_freshness(engine, config, now=now + timedelta(hours=5))
     stale = next(r for r in later if r.subject == LOCATION.station)
     assert not stale.passed and "6.0 h old" in (stale.detail or "")
+
+
+# --- lineage (Phase 3c) ---------------------------------------------------------
+
+
+def test_trace_follows_an_observation_from_bronze_to_the_gold_metric_it_fed(
+    engine: Engine, tmp_path: Any
+) -> None:
+    import json
+
+    from nimbus.jobs.trace import format_trace, trace_event
+    from nimbus.streaming.bronze_reader import BronzeMessage
+    from nimbus.streaming.bronze_sink import write_batch_to_parquet
+    from nimbus.streaming.observation_silver import message_to_rows
+    from nimbus.transform.observation import observation_frame
+
+    observed_at = _ts(FIRST_DAY, 12)
+
+    def envelope(event_id: str, temp: float) -> bytes:
+        return json.dumps(
+            {
+                "event_id": event_id,
+                "schema_version": 1,
+                "source": "observation_producer",
+                "event_type": "observation.raw",
+                "produced_at": observed_at.isoformat(),
+                "ingestion_mode": "live",
+                "payload": {
+                    "station": LOCATION.station,
+                    "observed_at": observed_at.isoformat(),
+                    "api_response": {
+                        "temp": temp,
+                        "dewp": 5.0,
+                        "wspd": 5,
+                        "slp": 1013.0,
+                        "rawOb": "METAR",
+                    },
+                },
+            }
+        ).encode()
+
+    def land(event_id: str, temp: float, offset: int) -> None:
+        raw = envelope(event_id, temp)
+        write_batch_to_parquet(
+            [BronzeMessage("weather.observation.raw.v1", 3, offset, 1_700_000_000_000, b"k", raw)],
+            "weather.observation.raw.v1",
+            tmp_path,
+        )
+        upsert_observation_rows(engine, observation_frame(message_to_rows(raw)))
+
+    land("evt-original", 20.0, offset=41)  # 293.15 K
+    forecast = _forecast_rows(FIRST_DAY, error=2.0, truth=293.15).iloc[[2]]  # valid 12:00
+    upsert_forecast_rows(engine, forecast)
+    build_gold(engine, config=CONFIG)
+
+    trace = trace_event(engine, "evt-original", tmp_path)
+
+    assert (trace.bronze[0].partition, trace.bronze[0].offset) == (3, 41)
+    assert trace.ingestion_run is None  # no producer run was recorded in this test
+    assert (trace.silver_expected, trace.silver_current) == (4, 4)
+    assert trace.gold_verification == 1  # only temperature had a forecast to score
+    assert len(trace.gold_accuracy) == 1
+    assert trace.gold_accuracy[0]["bias"] == pytest.approx(2.0)
+    text_report = format_trace(trace)
+    assert "partition 3" in text_report and "offset 41" in text_report
+
+    # A later event overwrites the rows: the trace says so instead of losing the event.
+    land("evt-revised", 21.0, offset=42)
+    later = trace_event(engine, "evt-original", tmp_path)
+    assert later.silver_current == 0
+    assert later.silver_by_event == {"evt-revised": 4}
+    assert "overwritten by event evt-revised" in format_trace(later)

@@ -165,12 +165,13 @@ original payload, `error_type`/`error_message`, and the source topic/partition/o
 ## 6. Loading history (`make demo` / `make backfill`)
 
 ```bash
-make demo        # last 30 days, all 25 locations, then drain + reconcile
-make backfill    # everything since 2024-01-01, then drain + reconcile
+make demo        # last 30 days, all 25 locations, then drain + reconcile + gold + quality
+make backfill    # everything since 2024-01-01, then the same
 ```
 
 Both first *produce* (`nimbus.jobs.backfill`), then `make drain` runs the bronze
-sink and both silver consumers to completion, then `make reconcile`.
+sink and both silver consumers to completion, then `make reconcile`, `make gold` and
+`make quality`.
 
 **IEM (observations) is a free academic service that sheds load with HTTP 503 and
 429** - about 20 of 70 requests in a 120-day run. The client retries patiently
@@ -196,7 +197,95 @@ station per 90 days.
 Useful flags: `--days N`, `--full`, `--start-date`, `--end-date`,
 `--only forecasts|observations`.
 
-## 7. Provider attribution
+## 7. The gold layer (`make gold`)
+
+```bash
+make gold                 # incremental: rebuilds only the days that saw new or revised data
+make gold ARGS=--full     # every day (after changing config/locations.yaml or config/gold.yaml)
+```
+
+`gold.forecast_verification` (each forecast value matched to the nearest observation
+within 30 minutes), `gold.accuracy_daily` (count/bias/MAE/RMSE per day, location, model,
+variable, lead day) and the `gold.model_leaderboard` view (rolling 7/30 days) are built by
+`nimbus.jobs.build_gold`. It is safe to run any time and as often as you like: an unchanged
+day is not rewritten, so a re-run leaves the tables identical.
+
+```bash
+docker exec nimbus-postgres psql -U nimbus -d nimbus -c   "select lead_day, round(avg(mae)::numeric, 2) as mae from gold.accuracy_daily
+   where variable = 'temperature_2m' group by 1 order by 1"
+```
+
+- **`make gold` says 0 days recomputed:** nothing changed since the last build (or no
+  observation is newer than the forecasts, so nothing can be scored yet).
+- **A run fails with `failed blocking checks`:** a day's data broke a blocking quality
+  check (e.g. a value beyond a hard physical limit reached silver). Gold was left as it
+  was and the watermark did not move. Read the failing check in
+  `ops.quality_results where context like 'gold-build%' and not passed`, fix or replay the
+  cause, and re-run.
+- **Verification rows look wrong after a config change:** `--full`.
+- `ops.gold_build_log` records, per rebuilt day, how many forecasts were eligible and how
+  many found an observation - low matching means a quiet station, not a bug.
+
+## 8. Data quality (`make quality`)
+
+```bash
+make quality              # pandera checks over rows changed in the last 24 h + freshness
+make quality ARGS=--all   # every row of every table (streams in 200k-row chunks)
+```
+
+Exits non-zero if a **blocking** check failed; warnings and stale sources are reported
+but do not fail it. Results are written to `ops.quality_results`.
+
+| Severity | Examples | What happens |
+|---|---|---|
+| blocking | null key, naive timestamp, infinite value, a value beyond a hard physical limit, `error` not equal to forecast minus observed | silver: the **message goes to the DLQ**; gold: the **build aborts** |
+| warning | a value outside the plausible range (e.g. above 60 degC) | the row loads and is flagged |
+
+Bounds are in `config/variables.yaml`; freshness limits in `config/quality.yaml`.
+
+```bash
+docker exec nimbus-postgres psql -U nimbus -d nimbus -c   "select context, table_name, check_name, severity, rows_failed, detail
+   from ops.quality_results where not passed order by id desc limit 20"
+```
+
+A quality-quarantined message is in the DLQ like any other (§5, `error_type` is
+`QualityError`); `make reconcile` counts it under "unparseable", so it is not reported
+as lost data. **Freshness** warnings (`check_name = 'freshness'`) name the station or
+source with no new data inside its interval - with the live producers stopped they will
+all be stale, which is the correct answer.
+
+## 9. Tracing one event (`make trace`)
+
+```bash
+make trace SAMPLE=observation          # pick a recent event from the lake
+make trace EVENT_ID=<event_id>         # or name one (event_id is in every structured log line)
+```
+
+Prints the API request (source, run or date range, the ingestion run), the Kafka topic,
+partition and offset, the bronze file, how many silver rows the event yields and how many
+still carry its id (a later event may have overwritten the rest - it says which), and the
+gold verification rows and daily accuracy metrics it fed. "not (yet) part of any gold
+metric" means `make gold` has not run since it landed, or nothing was scored against it.
+
+## 10. Partitions and retention (`make partitions`)
+
+`silver.forecast` is range-partitioned by `valid_time`, one partition per month
+(`silver.forecast_y2026m09`, ...). The migration creates 2024-01 to 2027-12 and a
+`forecast_default` partition that catches anything outside that.
+
+```bash
+make partitions                   # create the next 6 months; adopt rows stranded in the default partition
+make partitions ARGS=--dry-run    # preview what retention would drop
+```
+
+Run it monthly (or from the scheduler). **Retention is off by default**
+(`forecast_retention_months: null` in `config/storage.yaml`). When set, `make partitions`
+drops whole months older than the window and `make reconcile` compares only the retained
+window. To get a dropped month back, replay it from the bronze lake (§4). A non-empty
+`forecast_default` partition means data arrived outside the created months - run
+`make partitions`.
+
+## 11. Provider attribution
 
 Forecast data is from [Open-Meteo](https://open-meteo.com/) (CC BY 4.0;
 non-commercial use). Historical observations are from the Iowa Environmental

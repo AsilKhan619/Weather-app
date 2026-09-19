@@ -151,7 +151,7 @@ def test_a_correction_overwrites_the_original_report(
     consumer.close()
 
     original_raw_ob = str(_METAR_SFO["rawOb"])
-    corrected = dict(_METAR_SFO, temp=99.0, rawOb=original_raw_ob.replace("Z 280", "Z COR 280"))
+    corrected = dict(_METAR_SFO, temp=25.0, rawOb=original_raw_ob.replace("Z 280", "Z COR 280"))
     _run_one_poll_and_produce(settings, [corrected])
     consumer2 = make_consumer(settings, group_id="silver-observation")
     consumer2.subscribe([SOURCE_TOPIC])
@@ -169,7 +169,7 @@ def test_a_correction_overwrites_the_original_report(
         ).one()
     assert row_count == 4  # still one row per variable - the COR overwrote, didn't add
     assert temp_row.is_corrected is True
-    assert temp_row.value == pytest.approx(99.0 + 273.15)
+    assert temp_row.value == pytest.approx(25.0 + 273.15)
 
 
 @pytest.mark.integration
@@ -184,7 +184,7 @@ def test_a_late_original_does_not_overwrite_a_stored_correction(
     dlq_producer = make_producer(settings)
     shutdown = GracefulShutdown()
     original_raw_ob = str(_METAR_SFO["rawOb"])
-    corrected = dict(_METAR_SFO, temp=99.0, rawOb=original_raw_ob.replace("Z 280", "Z COR 280"))
+    corrected = dict(_METAR_SFO, temp=25.0, rawOb=original_raw_ob.replace("Z 280", "Z COR 280"))
 
     def consume_one_batch(group: str) -> None:
         consumer = make_consumer(settings, group_id=group)
@@ -208,7 +208,7 @@ def test_a_late_original_does_not_overwrite_a_stored_correction(
             )
         ).one()
     assert row.is_corrected is True
-    assert row.value == pytest.approx(99.0 + 273.15)
+    assert row.value == pytest.approx(25.0 + 273.15)
     assert " COR " in row.raw_text
 
 
