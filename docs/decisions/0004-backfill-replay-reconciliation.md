@@ -134,8 +134,60 @@ reconcile `MATCH` on identical row structure. Behaviour is unchanged:
 the existing transform tests pass unmodified, plus new tests pin batch-vs-
 per-message equivalence and poison handling.
 
-**Still open:** several *months* of history (this run is 30 days), and the full
-`make backfill`. The `demo` window is a 30-day slice of that, not a substitute.
+### Four months: the 120-day runs (2026-05-22 to 2026-09-18, 25 locations)
+
+Run on the same workflow with `days=120` (~1,800 weighted Open-Meteo calls by
+the estimate above, of a 10,000/day allowance). Two runs, because the first
+exposed one more provider behaviour:
+
+**IEM sheds load with HTTP 503 and 429.** Run 1 (default retry: 3 attempts, waits
+of a few seconds) lost 6 of 50 station requests, leaving 23 of 25 stations with
+observations, and correctly recorded the ingestion run as `failed`. Run 2, after
+switching IEM to a patient policy (5 attempts, waits growing toward a minute),
+had *more* transient errors than run 1 and lost none:
+
+| IEM requests | OK | 503 | 429 | ultimately failed |
+| --- | --- | --- | --- | --- |
+| run 1, default retry | 44 | 12 | 9 | **6** |
+| run 2, patient retry | 50 | 14 | 6 | **0** |
+
+So the patient policy demonstrably turned 20 transient errors into successes; it
+wasn't luck. The 429s also mean the 0.5s spacing between IEM requests was too
+aggressive for a free academic service, so it is now 2s (a courtesy change; not
+yet re-measured whether it removes the 429s).
+
+Run 2 result, clean (zero failed requests), reconcile `MATCH` on both topics:
+
+| | value |
+| --- | --- |
+| `silver.forecast` rows | 6,048,000 = 25 locations x 3 models x 2,880 hours x 28: every cell |
+| `silver.observation` rows | 435,832 from 108,960 reports, all 25 stations |
+| NaN rows / NULL rows (forecast) | 0 / 288,004 (~4.8%, same rate as the 30-day run) |
+| forecast request phase | 386s (1,350 events; 162 batched requests) |
+| observation request phase | 114s |
+| forecast silver drain | 1,404s for 6.05M rows = ~4,300 rows/s (same as at 30 days: it scales linearly) |
+| observation silver drain | 95s for 108,960 messages (~1,150 msg/s) |
+| reconcile (both topics) | 169s |
+| whole `make demo` | 2,189s (36.5 min) |
+
+A side effect worth knowing (found in review, benign): treating a truncated JSON body
+as retryable lives in the shared retry predicate, so it now also applies to the
+aviationweather and Open-Meteo Single Runs clients. A genuinely non-JSON 200/400
+body there now retries up to 3 times before raising the same error, adding only
+latency.
+
+Note on the 8-row gap: 108,960 reports x 4 variables would be 435,840 rows;
+silver has 435,832. Two pairs of reports share a station and a minute, and the
+natural key `(station, observed_at, variable)` collapses each pair to one row by
+design. Reconciliation compares unique keys, so it agrees.
+
+**Status against the acceptance criterion** ("several months of history for
+every location"): met for four months, all 25 locations and stations, reconciled.
+**Not run: the full `make backfill` (since 2024-01-01).** Projection only, from
+the measured rates above and not itself measured: ~50 million forecast rows,
+~3.2 hours of silver drain at 4,300 rows/s, and ~15,000 weighted API calls
+(two days of budget). Whether that is worth doing is a decision for the owner,
+not something the acceptance criterion requires.
 
 ## Observation backfill: IEM ASOS
 

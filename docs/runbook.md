@@ -136,10 +136,11 @@ are counted and skipped; the summary line reports them.
 
 Time is bounded by the pandas transform and the Postgres upserts, not by Kafka
 (there is no broker in this path). Measured on a GitHub runner (ADR 0004):
-forecast silver loads ~4,500 rows/s (1.5M rows in ~5.5 min). The observation
-transform was since made far cheaper per message (~170x in a transform-only
-microbenchmark), but its end-to-end rebuild time has not been re-measured;
-figures will be recorded in the README in Phase 8.
+forecast silver loads ~4,300 rows/s (6.05M rows in ~23 min, linear from 30 to
+120 days); observation silver ~1,150 messages/s (109k messages in 95 s, after the
+transform was made cheaper per message). Those are consumer drain rates on the
+live path; a `replay bronze` rebuild uses the same load code but has not been
+timed separately. Figures will be recorded in the README in Phase 8.
 
 **This is tested**: `tests/integration/test_backfill_and_rebuild.py` truncates
 both silver tables, rebuilds from a real lake, and asserts every row (values,
@@ -170,6 +171,11 @@ make backfill    # everything since 2024-01-01, then drain + reconcile
 
 Both first *produce* (`nimbus.jobs.backfill`), then `make drain` runs the bronze
 sink and both silver consumers to completion, then `make reconcile`.
+
+**IEM (observations) is a free academic service that sheds load with HTTP 503 and
+429** - about 20 of 70 requests in a 120-day run. The client retries patiently
+(5 attempts, waits growing toward a minute) and every request eventually
+succeeded; if any still fail, the job names them and re-running is safe.
 
 **Rate limits (Open-Meteo, non-commercial): 600 calls/min, 10,000/day.** Requests
 are weighted by volume (each 10 variables x 14 days per location counts as one).

@@ -46,7 +46,9 @@ DEFAULT_FORECAST_CHUNK_DAYS = 7
 DEFAULT_FORECAST_LOCATION_BATCH = 10
 DEFAULT_FORECAST_THROTTLE_SECONDS = 2.0
 DEFAULT_OBSERVATION_CHUNK_DAYS = 90
-DEFAULT_OBSERVATION_THROTTLE_SECONDS = 0.5
+# IEM answered 429/503 to ~20 of 70 requests at 0.5s spacing (ADR 0004): it is a
+# free academic service, so be gentler. Not yet re-measured whether 2s removes the 429s.
+DEFAULT_OBSERVATION_THROTTLE_SECONDS = 2.0
 
 
 @dataclass
