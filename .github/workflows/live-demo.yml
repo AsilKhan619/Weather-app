@@ -49,6 +49,19 @@ jobs:
           [[ "$DEMO_DAYS" =~ ^[0-9]+$ ]] || { echo "days must be a positive integer"; exit 1; }
           make demo DEMO_DAYS="$DEMO_DAYS"
 
+      - name: Gold idempotency (re-run changes nothing)
+        run: |
+          fingerprint() {
+            docker exec nimbus-postgres psql -U nimbus -d nimbus -At -c "select md5(string_agg(t::text, '|' order by t::text)) from gold.forecast_verification t union all select md5(string_agg(t::text, '|' order by t::text)) from gold.accuracy_daily t" | paste -sd' '
+          }
+          before=$(fingerprint)
+          make gold
+          make gold ARGS=--full
+          after=$(fingerprint)
+          echo "before: $before"
+          echo "after:  $after"
+          [ "$before" = "$after" ] || { echo "gold changed on re-run"; exit 1; }
+
       - name: Summarize results
         if: always()
         run: |
@@ -79,6 +92,18 @@ jobs:
             echo "### Reconciliation"
             echo '```'
             q "select topic, matched, produced_messages as produced, bronze_messages as bronze, bronze_distinct_events as distinct_events, bronze_unparseable as unparseable, expected_silver_rows as expected, silver_rows as actual, missing_from_silver as missing, extra_in_silver as extra from ops.reconciliation_results order by id"
+            echo '```'
+            echo "### Gold: forecast error rises with lead time (MAE, all locations)"
+            echo '```'
+            q "select variable, lead_day, round(sum(n * mae)::numeric / sum(n), 3) as mae, round((sum(n * bias) / sum(n))::numeric, 3) as bias, sum(n) as verified from gold.accuracy_daily group by 1, 2 order by 1, 2"
+            echo '```'
+            echo "### Gold: leaderboard (30-day window, temperature, lead day 1)"
+            echo '```'
+            q "select model, round(avg(mae)::numeric, 3) as avg_mae, round(avg(mae_rank)::numeric, 2) as avg_rank, sum(n) as verified from gold.model_leaderboard where window_days = 30 and variable = 'temperature_2m' and lead_day = 1 group by 1 order by 2"
+            echo '```'
+            echo "### Gold: verification coverage"
+            echo '```'
+            q "select run_kind, count(*) as day_builds, sum(eligible_forecasts) as eligible, sum(matched) as matched from ops.gold_build_log group by 1 order by 1"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           cat "$GITHUB_STEP_SUMMARY"
