@@ -122,8 +122,15 @@ once per *batch* (`observation_frame`); reconciliation hashes once per batch.
 Microbenchmark, same machine, 5,000 messages, **transform + validation only (no
 database, no Kafka)**: silver path **8.9 ms -> 0.052 ms per message (~170x)**;
 reconciliation path ~0.77 ms per message (~12x or better). The end-to-end drain
-is bounded by Postgres upserts and will improve by less than the microbenchmark;
-that is measured by the next live run, not claimed here. Behaviour is unchanged:
+is bounded by Postgres upserts and improves by less than the microbenchmark. **Measured
+by re-running the same 30-day demo afterwards:** observation silver drain 209s ->
+35s (~6x), reconciliation 227s -> 41s (~5.5x), whole `make demo` 1,416s -> 598s.
+So the end-to-end gain is ~6x, not ~170x: the transform stopped being the
+bottleneck and Postgres upserts and Kafka now are. (The forecast *request* phase
+also went 551s -> 122s between the runs, but that code did not change - treat it as
+API load variance, not an improvement.) The remaining bottleneck is the forecast
+silver drain, ~4,300 rows/s (1.5M rows in ~350s), unchanged. Both topics still
+reconcile `MATCH` on identical row structure. Behaviour is unchanged:
 the existing transform tests pass unmodified, plus new tests pin batch-vs-
 per-message equivalence and poison handling.
 

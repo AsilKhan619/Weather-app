@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 
-from nimbus.common.http import with_http_retry
+from nimbus.common.http import patient_http_retry
 
 IEM_URL = "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py"
 INHG_TO_HPA = 33.8639
@@ -33,7 +33,7 @@ _PARAMS: dict[str, Any] = {
 }
 
 
-@with_http_retry
+@patient_http_retry
 def fetch_station_history(
     client: httpx.Client, station: str, start: date, end_exclusive: date
 ) -> str:

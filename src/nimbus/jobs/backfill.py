@@ -80,6 +80,13 @@ def _report(name: str, result: BackfillResult) -> None:
     print(f"{name}: produced {result.produced:,} events, {result.failed:,} failed chunks")
     if result.aborted_at is not None:
         print(f"  RATE LIMITED - resume with: --start-date {result.aborted_at.isoformat()}")
+    for failure in result.failures[:20]:
+        print(f"  FAILED: {failure}")
+    if result.failures:
+        print(
+            "  Re-running is safe (idempotent). To redo just this part: "
+            f"--only {name} --start-date <earliest date above>"
+        )
 
 
 def run(

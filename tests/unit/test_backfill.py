@@ -294,6 +294,7 @@ def test_one_failing_batch_loses_only_its_own_locations() -> None:
 
     assert result.failed == 1
     assert result.produced == 15  # batches of 10 + 5 landed; the middle 10 did not
+    assert result.failures == ["forecasts gfs_seamless 2024-06-01 (loc-10..loc-19)"]
 
 
 def test_a_truncated_response_body_is_retried_and_then_succeeds(
@@ -378,3 +379,6 @@ def test_observation_backfill_failure_is_counted_and_continues() -> None:
 
     assert result.failed == 1
     assert result.produced == 2  # Denver still landed
+    assert result.failures == [
+        "observations KSFO 2024-06-01"
+    ]  # says WHAT to redo, not just a count

@@ -9,7 +9,7 @@ after a rate-limit abort, or a retry) is a no-op at the database."""
 import logging
 import time
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
 import httpx
@@ -53,6 +53,9 @@ DEFAULT_OBSERVATION_THROTTLE_SECONDS = 0.5
 class BackfillResult:
     produced: int = 0
     failed: int = 0
+    # One human-readable line per failed request (what and from when), so a
+    # partial run says exactly what to redo rather than just a count.
+    failures: list[str] = field(default_factory=list)
     # Set when the provider rate-limited us: re-run with --start-date on this
     # date to resume (everything before it completed, and re-work is idempotent).
     aborted_at: date | None = None
@@ -131,6 +134,9 @@ def backfill_forecasts(
                         },
                     )
                     result.failed += 1
+                    result.failures.append(
+                        f"forecasts {model.id} {chunk_start} ({batch[0].id}..{batch[-1].id})"
+                    )
                     sleep(throttle_seconds)
                     continue
 
@@ -202,6 +208,7 @@ def backfill_observations(
                     extra={"station": location.station, "chunk_start": str(chunk_start)},
                 )
                 result.failed += 1
+                result.failures.append(f"observations {location.station} {chunk_start}")
                 sleep(throttle_seconds)
                 continue
 
