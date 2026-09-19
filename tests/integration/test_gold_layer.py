@@ -292,3 +292,97 @@ def test_leaderboard_ranks_models_by_window(engine: Engine) -> None:
     assert board[(30, "gfs_seamless")].mae == pytest.approx(2.0)
     assert board[(30, "icon_seamless")].mae == pytest.approx(2.375)
     assert board[(30, "gfs_seamless")].mae_rank == 1
+
+
+# --- quality (Phase 3b) ---------------------------------------------------------
+
+
+def _quality_rows(engine: Engine, context_like: str) -> list[dict[str, Any]]:
+    return _table(
+        engine,
+        f"ops.quality_results WHERE context LIKE '{context_like}'",
+        "id",
+    )
+
+
+def test_a_gold_build_records_its_quality_results(engine: Engine) -> None:
+    _seed(engine, days=1)
+    build_gold(engine, config=CONFIG)
+
+    rows = _quality_rows(engine, "gold-build%")
+    tables = {(r["table_name"], r["severity"]) for r in rows}
+    assert ("gold.forecast_verification", "blocking") in tables
+    assert ("gold.accuracy_daily", "blocking") in tables
+    assert all(r["passed"] for r in rows)
+
+
+def test_a_blocking_failure_aborts_the_build_and_leaves_gold_untouched(engine: Engine) -> None:
+    from nimbus.quality.runner import QualityError
+
+    _seed(engine, days=2)
+    build_gold(engine, config=CONFIG)
+    before = _verification(engine)
+    watermark_before = _table(engine, "ops.job_state", "job")
+
+    # An impossible observation (773 K) that reached silver by some route that
+    # bypassed the consumer gate - gold must still refuse to score against it.
+    upsert_observation_rows(engine, _observation_rows(FIRST_DAY, value=773.0, event="bad"))
+    with pytest.raises(QualityError, match="hard_range"):
+        build_gold(engine, config=CONFIG)
+
+    assert _verification(engine) == before
+    assert _table(engine, "ops.job_state", "job") == watermark_before  # will be retried
+    failed = [r for r in _quality_rows(engine, "gold-build%") if not r["passed"]]
+    assert any(r["check_name"] == "hard_range_o" and r["severity"] == "blocking" for r in failed)
+
+
+def test_the_quality_suite_validates_silver_and_gold_and_records_everything(
+    engine: Engine,
+) -> None:
+    from nimbus.jobs.run_quality import run_suite
+    from nimbus.quality.runner import persist_results
+
+    _seed(engine)
+    build_gold(engine, config=CONFIG)
+
+    results = run_suite(engine, since=None)
+    persist_results(engine, results, context="quality-suite")
+
+    tables = {r.table for r in results}
+    assert {"silver.forecast", "silver.observation", "gold.forecast_verification"} <= tables
+    assert not [r for r in results if r.severity == "blocking" and not r.passed]
+    assert len(_quality_rows(engine, "quality-suite")) == len(results)
+
+
+def test_freshness_flags_quiet_stations_and_sources(engine: Engine) -> None:
+    from nimbus.common.config import QualityConfig
+    from nimbus.quality.freshness import check_freshness
+
+    now = datetime(2026, 1, 2, 12, tzinfo=UTC)
+    fresh = pd.DataFrame(
+        {
+            "station": LOCATION.station,
+            "observed_at": [now - timedelta(hours=1)],
+            "variable": VAR,
+            "value": 280.0,
+            "raw_text": "METAR",
+            "is_corrected": False,
+            "ingestion_mode": "live",
+            "source_event_id": "fresh",
+        }
+    )
+    upsert_observation_rows(engine, fresh)
+    config = QualityConfig(observation_max_age_hours=3, forecast_max_run_age_hours=14)
+
+    results = {(r.table, r.subject): r for r in check_freshness(engine, config, now=now)}
+
+    assert results[("silver.observation", LOCATION.station)].passed
+    other = next(
+        r for (t, s), r in results.items() if t == "silver.observation" and s != LOCATION.station
+    )
+    assert not other.passed and other.detail == "no data yet"
+    assert not results[("ops.ingestion_runs", "forecast_producer")].passed  # never ran
+
+    later = check_freshness(engine, config, now=now + timedelta(hours=5))
+    stale = next(r for r in later if r.subject == LOCATION.station)
+    assert not stale.passed and "6.0 h old" in (stale.detail or "")

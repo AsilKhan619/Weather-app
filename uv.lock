@@ -1958,6 +1958,7 @@ dependencies = [
     { name = "httpx" },
     { name = "numpy" },
     { name = "pandas" },
+    { name = "pandera" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
     { name = "pydantic-settings" },
@@ -1978,9 +1979,6 @@ llm = [
 ]
 orchestration = [
     { name = "apache-airflow" },
-]
-quality = [
-    { name = "pandera" },
 ]
 sql = [
     { name = "sqlglot" },
@@ -2007,7 +2005,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1,<1.0" },
     { name = "numpy", specifier = ">=2.5,<3" },
     { name = "pandas", specifier = ">=3.0.5,<4" },
-    { name = "pandera", marker = "extra == 'quality'", specifier = ">=0.33.1,<0.34" },
+    { name = "pandera", specifier = ">=0.33.1,<0.34" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.5,<4" },
     { name = "pyarrow", marker = "extra == 'ingestion'", specifier = ">=25.0.1,<26" },
     { name = "pydantic", specifier = ">=2.13.4,<3" },
@@ -2018,7 +2016,7 @@ requires-dist = [
     { name = "streamlit", marker = "extra == 'dashboard'", specifier = ">=1.63.0,<2" },
     { name = "tenacity", specifier = ">=9.1.4,<10" },
 ]
-provides-extras = ["ingestion", "quality", "dashboard", "sql", "llm", "orchestration"]
+provides-extras = ["ingestion", "dashboard", "sql", "llm", "orchestration"]
 
 [package.metadata.requires-dev]
 dev = [

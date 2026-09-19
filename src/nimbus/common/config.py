@@ -1,4 +1,4 @@
-"""Typed loaders for the YAML files under config/ (locations, models, variables, gold)."""
+"""Typed loaders for the YAML files under config/ (locations, models, variables, gold, quality)."""
 
 from pathlib import Path
 
@@ -47,6 +47,10 @@ class VariableSpec(BaseModel):
     name: str
     unit: str
     description: str
+    plausible_min: float
+    plausible_max: float
+    hard_min: float
+    hard_max: float
 
 
 class GoldConfig(BaseModel):
@@ -63,3 +67,13 @@ def load_variables(path: Path = CONFIG_DIR / "variables.yaml") -> list[VariableS
 def load_gold_config(path: Path = CONFIG_DIR / "gold.yaml") -> GoldConfig:
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     return GoldConfig.model_validate(raw)
+
+
+class QualityConfig(BaseModel):
+    observation_max_age_hours: float
+    forecast_max_run_age_hours: float
+
+
+def load_quality_config(path: Path = CONFIG_DIR / "quality.yaml") -> QualityConfig:
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return QualityConfig.model_validate(raw)

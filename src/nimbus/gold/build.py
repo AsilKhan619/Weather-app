@@ -24,7 +24,7 @@ from typing import Any, Literal
 import pandas as pd
 from sqlalchemy import Connection, Engine, Table, and_, delete, func, select, text, tuple_
 
-from nimbus.common.config import GoldConfig, load_gold_config
+from nimbus.common.config import GoldConfig, load_gold_config, load_variables
 from nimbus.common.db import UPSERT_CHUNK_SIZE, upsert_chunks
 from nimbus.common.tables import (
     accuracy_daily_table,
@@ -40,6 +40,8 @@ from nimbus.gold.verification import (
     eligible_forecasts,
     verify_forecasts,
 )
+from nimbus.quality.runner import CheckResult, QualityError, persist_results, validate_frame
+from nimbus.quality.schemas import accuracy_checks, verification_checks
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +72,7 @@ class DayResult:
     valid_date: date
     eligible: int
     matched: int
+    quality: list[CheckResult]
 
 
 @dataclass(frozen=True)
@@ -240,6 +243,22 @@ def build_day(conn: Connection, day: date, config: GoldConfig, run_kind: RunKind
     )
     accuracy = aggregate_accuracy(verification)
 
+    # Quality gate before the load (brief section 8): a blocking failure aborts the
+    # day - gold keeps its previous, valid rows - and the run fails loudly.
+    quality = [
+        *validate_frame(
+            verification,
+            verification_checks(
+                load_variables(), tolerance_minutes=config.observation_match_tolerance_minutes
+            ),
+        ).results,
+        *validate_frame(accuracy, accuracy_checks()).results,
+    ]
+    blocking = [r for r in quality if r.severity == "blocking" and not r.passed]
+    if blocking:
+        names = ", ".join(sorted({f"{r.table}:{r.check}" for r in blocking}))
+        raise QualityError(f"gold build for {day} failed blocking checks: {names}", quality)
+
     v = forecast_verification_table.c
     sync_rows(
         conn,
@@ -267,7 +286,7 @@ def build_day(conn: Connection, day: date, config: GoldConfig, run_kind: RunKind
             matched=len(verification),
         )
     )
-    return DayResult(valid_date=day, eligible=eligible, matched=len(verification))
+    return DayResult(valid_date=day, eligible=eligible, matched=len(verification), quality=quality)
 
 
 def build_gold(
@@ -293,8 +312,13 @@ def build_gold(
     run_kind: RunKind = "full" if since is None else "incremental"
     results: list[DayResult] = []
     for day in days:
-        with engine.begin() as conn:
-            result = build_day(conn, day, config, run_kind)
+        try:
+            with engine.begin() as conn:
+                result = build_day(conn, day, config, run_kind)
+        except QualityError as exc:
+            persist_results(engine, exc.results, context=f"gold-build {day}")
+            raise
+        persist_results(engine, result.quality, context=f"gold-build {day}")
         results.append(result)
         logger.info(
             "gold day built",

@@ -27,6 +27,12 @@ from sqlalchemy import Engine, text
 from nimbus.common.db import make_engine
 from nimbus.common.logging import configure_logging
 from nimbus.common.settings import get_settings
+from nimbus.quality.gate import gate_frame
+from nimbus.quality.schemas import (
+    TableChecks,
+    silver_forecast_gate,
+    silver_observation_gate,
+)
 from nimbus.streaming import forecast_silver, observation_silver
 from nimbus.streaming.bronze_reader import DEFAULT_LAKE_ROOT, iter_bronze_batches
 
@@ -42,6 +48,7 @@ class TopicSpec:
     key_columns: tuple[str, ...]
     time_columns: tuple[str, ...]
     to_frame: Callable[[bytes], pd.DataFrame]
+    checks: Callable[[], TableChecks]
     produced_sources: tuple[str, ...]
 
 
@@ -52,6 +59,7 @@ TOPIC_SPECS: dict[str, TopicSpec] = {
         key_columns=("model", "location_id", "init_time", "valid_time", "variable"),
         time_columns=("init_time", "valid_time"),
         to_frame=forecast_silver.message_to_frame,
+        checks=silver_forecast_gate,
         produced_sources=("forecast_producer", "forecast_backfill"),
     ),
     "weather.observation.raw.v1": TopicSpec(
@@ -61,6 +69,7 @@ TOPIC_SPECS: dict[str, TopicSpec] = {
         time_columns=("observed_at",),
         # plain frame: reconciliation only needs keys, so skip the categorical casts
         to_frame=lambda raw: pd.DataFrame(observation_silver.message_to_rows(raw)),
+        checks=silver_observation_gate,
         produced_sources=("observation_producer", "observation_backfill"),
     ),
 }
@@ -142,6 +151,14 @@ def summarize_bronze(spec: TopicSpec, lake_root: Path = DEFAULT_LAKE_ROOT) -> Br
             continue
         # Hash once per batch: per-message pandas work is the expensive part.
         batch_frame = pd.concat(frames, ignore_index=True)
+        # The same quality gate the live consumer applies: a message it would have
+        # sent to the DLQ is not expected in silver.
+        gate = gate_frame(batch_frame, spec.checks())
+        if gate.blocked_events:
+            unparseable += len(gate.blocked_events)
+            batch_frame = gate.clean
+            if batch_frame.empty:
+                continue
         event_ids.update(batch_frame["source_event_id"].astype(str).unique())
         hash_chunks.append(key_hashes(batch_frame, spec.key_columns, spec.time_columns))
 

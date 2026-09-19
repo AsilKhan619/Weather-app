@@ -18,11 +18,15 @@ from nimbus.common.logging import configure_logging
 from nimbus.common.schemas import ForecastBackfillRawPayload, ForecastRawPayload
 from nimbus.common.settings import get_settings
 from nimbus.common.tables import forecast_table
+from nimbus.quality.gate import gate_frame
+from nimbus.quality.runner import QualityError, persist_results
+from nimbus.quality.schemas import silver_forecast_gate
 from nimbus.streaming.cli import parse_drain_flag
 from nimbus.streaming.microbatch import run_microbatch_loop
 from nimbus.transform.forecast import explode_forecast_payload, explode_previous_runs_payload
 
 logger = logging.getLogger(__name__)
+
 
 SOURCE_TOPIC = "weather.forecast.raw.v1"
 DLQ_TOPIC = "weather.dlq.v1"
@@ -84,18 +88,27 @@ def load_messages(
     fails validation or transformation goes to `on_poison` and never blocks the
     rest of the batch."""
     frames: list[pd.DataFrame] = []
+    by_event: dict[str, KafkaMessageLike] = {}
     for msg in messages:
         try:
             raw_value = msg.value()
             if raw_value is None:
                 raise ValueError("message has no value")
-            frames.append(message_to_frame(raw_value))
+            frame = message_to_frame(raw_value)
+            frames.append(frame)
+            by_event[str(frame["source_event_id"].iloc[0])] = msg
         except (ValidationError, ValueError, KeyError, TypeError) as exc:
             on_poison(msg, exc)
 
-    if frames:
-        upsert_forecast_rows(engine, pd.concat(frames, ignore_index=True))
-    return len(frames)
+    if not frames:
+        return 0
+    gate = gate_frame(pd.concat(frames, ignore_index=True), silver_forecast_gate())
+    for event_id in sorted(gate.blocked_events):
+        on_poison(by_event[event_id], QualityError("failed a blocking quality check"))
+    if gate.failed:
+        persist_results(engine, gate.failed, context="silver-forecast batch", only_failures=True)
+    upsert_forecast_rows(engine, gate.clean)
+    return len(frames) - len(gate.blocked_events)
 
 
 def process_batch(

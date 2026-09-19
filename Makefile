@@ -1,4 +1,4 @@
-.PHONY: up down logs demo backfill drain reconcile gold test test-integration lint typecheck eval trace replay sync migrate init-topics produce-forecasts produce-observations
+.PHONY: up down logs demo backfill drain reconcile gold quality test test-integration lint typecheck eval trace replay sync migrate init-topics produce-forecasts produce-observations
 
 sync:
 	uv sync --all-extras
@@ -42,15 +42,20 @@ reconcile:
 gold:
 	uv run python -m nimbus.jobs.build_gold $(ARGS)
 
+# Pandera checks over recently changed silver/gold rows, plus freshness; results land in
+# ops.quality_results. Non-zero exit if a blocking check failed. ARGS=--all checks everything.
+quality:
+	uv run python -m nimbus.jobs.run_quality $(ARGS)
+
 DEMO_DAYS ?= 30
 
-# Produce history, then ALWAYS land whatever was produced (drain + reconcile + gold),
+# Produce history, then ALWAYS land whatever was produced (drain + reconcile + gold + quality),
 # and only then report the producer's status. A partially failed backfill (say a
 # rate limit) must not strand the events it did produce in Kafka.
 define LOAD_HISTORY
 @status=0; \
 uv run python -m nimbus.jobs.backfill $(1) || status=$$?; \
-$(MAKE) drain && $(MAKE) reconcile && $(MAKE) gold; rc=$$?; \
+$(MAKE) drain && $(MAKE) reconcile && $(MAKE) gold && $(MAKE) quality; rc=$$?; \
 if [ $$status -ne 0 ]; then echo "backfill reported failures (exit $$status); landed what it produced"; exit $$status; fi; \
 exit $$rc
 endef

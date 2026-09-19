@@ -21,14 +21,13 @@ dependencies = [
   "httpx>=0.28.1,<1.0", # 1.0 is still pre-release as of Sept 2026 (see ADR 0001)
   "pyyaml>=6.0.3,<7",
   "numpy>=2.5,<3",
+  "pandera>=0.33.1,<0.34", # DataFrame schemas gate every silver/gold load (ADR 0005), so not optional
   "pandas>=3.0.5,<4", # 3.0 is a major version (copy-on-write only, new default string dtype) - see ADR 0001
 ]
 
 [project.optional-dependencies]
 # Phase 1: bronze Parquet lake
 ingestion = ["pyarrow>=25.0.1,<26"]
-# Phase 3: DataFrame validation
-quality = ["pandera>=0.33.1,<0.34"]
 # Phase 4: dashboard
 dashboard = ["streamlit>=1.63.0,<2"]
 # Phase 6: agent SQL guardrails

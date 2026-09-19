@@ -126,3 +126,20 @@ gold_build_log_table = sa.Table(
     sa.Column("matched", sa.Integer, nullable=False),
     schema="ops",
 )
+
+quality_results_table = sa.Table(
+    "quality_results",
+    metadata,
+    sa.Column("id", sa.BigInteger, primary_key=True, autoincrement=True),
+    sa.Column("checked_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+    sa.Column("context", sa.Text, nullable=False),
+    sa.Column("table_name", sa.Text, nullable=False),
+    sa.Column("check_name", sa.Text, nullable=False),
+    sa.Column("severity", sa.Text, nullable=False),
+    sa.Column("subject", sa.Text),
+    sa.Column("rows_checked", sa.BigInteger, nullable=False),
+    sa.Column("rows_failed", sa.BigInteger, nullable=False),
+    sa.Column("passed", sa.Boolean, nullable=False),
+    sa.Column("detail", sa.Text),
+    schema="ops",
+)

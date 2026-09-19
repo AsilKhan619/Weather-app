@@ -1,0 +1,9 @@
+# Freshness expectations (brief section 8): flag any station or model with no new
+# data within its expected interval.
+
+# METARs are filed hourly (plus specials); allow two missed reports.
+observation_max_age_hours: 3
+
+# A new model run starts every 6 h and becomes available 4-6 h after its init
+# time (ADR 0001), so the newest usable run can legitimately be ~12 h old.
+forecast_max_run_age_hours: 14

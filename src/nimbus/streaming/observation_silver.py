@@ -21,6 +21,9 @@ from nimbus.common.logging import configure_logging
 from nimbus.common.schemas import ObservationRawPayload
 from nimbus.common.settings import get_settings
 from nimbus.common.tables import observation_table
+from nimbus.quality.gate import gate_frame
+from nimbus.quality.runner import QualityError, persist_results
+from nimbus.quality.schemas import silver_observation_gate
 from nimbus.streaming.cli import parse_drain_flag
 from nimbus.streaming.microbatch import run_microbatch_loop
 from nimbus.transform.observation import observation_frame, observation_rows
@@ -91,20 +94,27 @@ def load_messages(
     """Validate -> transform -> upsert a batch; returns how many messages loaded.
     Kafka-independent so a replay from the bronze lake reuses it unchanged."""
     rows: list[dict[str, Any]] = []
-    loaded = 0
+    by_event: dict[str, KafkaMessageLike] = {}
     for msg in messages:
         try:
             raw_value = msg.value()
             if raw_value is None:
                 raise ValueError("message has no value")
-            rows.extend(message_to_rows(raw_value))
-            loaded += 1
+            message_rows = message_to_rows(raw_value)
+            rows.extend(message_rows)
+            by_event[str(message_rows[0]["source_event_id"])] = msg
         except (ValidationError, ValueError, KeyError, TypeError) as exc:
             on_poison(msg, exc)
 
-    if rows:
-        upsert_observation_rows(engine, observation_frame(rows))
-    return loaded
+    if not rows:
+        return 0
+    gate = gate_frame(observation_frame(rows), silver_observation_gate())
+    for event_id in sorted(gate.blocked_events):
+        on_poison(by_event[event_id], QualityError("failed a blocking quality check"))
+    if gate.failed:
+        persist_results(engine, gate.failed, context="silver-observation batch", only_failures=True)
+    upsert_observation_rows(engine, gate.clean)
+    return len(by_event) - len(gate.blocked_events)
 
 
 def process_batch(

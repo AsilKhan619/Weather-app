@@ -105,5 +105,13 @@ jobs:
             echo '```'
             q "select run_kind, count(*) as day_builds, sum(eligible_forecasts) as eligible, sum(matched) as matched from ops.gold_build_log group by 1 order by 1"
             echo '```'
+            echo "### Data quality (ops.quality_results, latest suite run)"
+            echo '```'
+            q "select table_name, check_name, severity, coalesce(subject, '') as subject, rows_checked, rows_failed, passed from ops.quality_results where context = 'quality-suite' and id >= (select max(id) - 200 from ops.quality_results) and (not passed or check_name = 'all_checks') order by passed, table_name, check_name, subject limit 60"
+            echo '```'
+            echo "### Data quality: quarantined or flagged by the consumers"
+            echo '```'
+            q "select context, table_name, check_name, severity, sum(rows_failed) as rows_failed, count(*) as batches from ops.quality_results where context like 'silver-%' group by 1, 2, 3, 4 order by 1, 2, 3"
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           cat "$GITHUB_STEP_SUMMARY"

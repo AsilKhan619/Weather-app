@@ -1,16 +1,38 @@
 # The four verified variables (brief section 5) and their stored (SI) units.
 # Forecast and observation values are converted to these before they reach
 # silver, so an error in gold is always a difference in the same unit.
+#
+# Two range tiers per variable (brief section 8, ADR 0005):
+#   plausible_*  the physically plausible range (e.g. -90..60 degC for air
+#                temperature). Outside it a value is flagged (warning) but kept.
+#   hard_*       a wider physical limit no real value can exceed. Outside it a
+#                value is a data error (blocking): its message goes to the DLQ.
 variables:
   - name: temperature_2m
     unit: K
     description: Air temperature at 2 m
+    plausible_min: 183.15 # -90 degC
+    plausible_max: 333.15 # 60 degC
+    hard_min: 150.0
+    hard_max: 360.0
   - name: dew_point_2m
     unit: K
     description: Dew point temperature at 2 m
+    plausible_min: 173.15 # -100 degC
+    plausible_max: 308.15 # 35 degC
+    hard_min: 150.0
+    hard_max: 330.0
   - name: wind_speed_10m
     unit: m/s
     description: Wind speed at 10 m
+    plausible_min: 0.0
+    plausible_max: 60.0
+    hard_min: 0.0
+    hard_max: 120.0
   - name: pressure_msl
     unit: Pa
     description: Mean sea-level pressure
+    plausible_min: 87000.0 # lowest sea-level pressure ever recorded is ~87,000 Pa
+    plausible_max: 108500.0 # highest is ~108,400 Pa
+    hard_min: 50000.0
+    hard_max: 120000.0
