@@ -135,7 +135,10 @@ correction (COR) still lands after the report it corrects. Unparseable messages
 are counted and skipped; the summary line reports them.
 
 Time is bounded by the pandas transform and the Postgres upserts, not by Kafka
-(there is no broker in this path). It has not been benchmarked yet; measured
+(there is no broker in this path). Measured on a GitHub runner (ADR 0004):
+forecast silver loads ~4,500 rows/s (1.5M rows in ~5.5 min). The observation
+transform was since made far cheaper per message (~170x in a transform-only
+microbenchmark), but its end-to-end rebuild time has not been re-measured;
 figures will be recorded in the README in Phase 8.
 
 **This is tested**: `tests/integration/test_backfill_and_rebuild.py` truncates

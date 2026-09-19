@@ -85,9 +85,50 @@ before reporting the producer's failure. A failed batch loses only its own
 (chunk, model, locations); the rest land. Event ids are unchanged, so batching
 is idempotent with anything already produced.
 
-**Still open:** a run that completes cleanly. The batched shape has not yet
-been run against the live API - unit tests only prove the batching logic, not
-that 10 locations reliably stays under the server's limit.
+### The re-run with batched requests (same workflow, 30 days, 25 locations)
+
+Clean end to end, 23m39s. **Forecasts: 375 events (5 chunks x 3 models x 25
+locations), zero failed requests, and no truncation retries were even needed.**
+Observations: 27,094 events, zero failures. Landed in silver:
+
+| table | rows | check |
+| --- | --- | --- |
+| `silver.forecast` | 1,512,000 | = 25 locations x 3 models x 720 hours x 28 (4 variables x 7 lead days): every cell, no gaps |
+| `silver.observation` | 108,376 | = 27,094 reports x 4 variables |
+
+Missing values: **0 NaN rows, 72,000 NULL rows (~4.8%)** - the NaN-to-NULL fix
+confirmed on real data, and consistent with the ~5% missing-hour rate probed
+earlier. Reconciliation: **`MATCH` on both topics** (produced = bronze = distinct
+events; 0 missing, 0 extra, 0 unparseable).
+
+Where the 23 minutes went (measured from the run's timestamps): forecast
+backfill 551s (45 requests, ~12s each including the 2s throttle); observation
+backfill 25s; bronze drain 20s; **forecast silver drain 334s** for 1.5M rows
+(~4,500 rows/s); **observation silver drain 209s** for only 108k rows; and
+reconciliation 227s.
+
+### The observation transform cost far more per message than it needed to
+
+The observation drain and the reconciliation were slow relative to their size:
+~130 messages/second, which projects to about two hours each for a full-history
+backfill. Reproduced locally (8.9 ms/message, 112 msg/s) and profiled: nearly
+all of it was pandas overhead in the *per-message* transform - a DataFrame,
+category casts, and scalar column assignments for a 4-row METAR - not parsing.
+The forecast path never showed it because its messages are ~4,700 rows each, so
+the per-call overhead amortises.
+
+Fix: per-message work is plain Python (`observation_rows`), and pandas is used
+once per *batch* (`observation_frame`); reconciliation hashes once per batch.
+Microbenchmark, same machine, 5,000 messages, **transform + validation only (no
+database, no Kafka)**: silver path **8.9 ms -> 0.052 ms per message (~170x)**;
+reconciliation path ~0.77 ms per message (~12x or better). The end-to-end drain
+is bounded by Postgres upserts and will improve by less than the microbenchmark;
+that is measured by the next live run, not claimed here. Behaviour is unchanged:
+the existing transform tests pass unmodified, plus new tests pin batch-vs-
+per-message equivalence and poison handling.
+
+**Still open:** several *months* of history (this run is 30 days), and the full
+`make backfill`. The `demo` window is a 30-day slice of that, not a substitute.
 
 ## Observation backfill: IEM ASOS
 

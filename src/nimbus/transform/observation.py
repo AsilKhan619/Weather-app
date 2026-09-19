@@ -1,9 +1,19 @@
-"""Pure, unit-tested transform: one raw METAR payload -> tidy SI-unit rows
-(brief section 7). No `iterrows`, explicit dtypes, categoricals. Handles the
-messiness the brief calls out (section 5): missing fields, variable winds,
-corrected reports, and stations that don't report sea-level pressure."""
+"""Pure, unit-tested transform: raw METAR payloads -> tidy SI-unit rows (brief
+section 7). Handles the messiness the brief calls out (section 5): missing
+fields, variable winds, corrected reports, and stations that don't report
+sea-level pressure.
 
+Granularity matters here. One METAR is only 4 rows, and building a DataFrame
+per message (with its category casts and column assignments) cost ~9 ms each -
+~112 messages/second, measured on the first real 30-day run (ADR 0004), which
+would have made a full-history backfill and its reconciliation take hours. So
+the per-message work is plain Python (`observation_rows`) and pandas is used
+once per *batch* (`observation_frame`), with explicit dtypes and categoricals."""
+
+import math
 import re
+from collections.abc import Callable, Sequence
+from typing import Any
 
 import pandas as pd
 
@@ -24,53 +34,76 @@ OBSERVATION_COLUMNS = [
     "ingestion_mode",
 ]
 
+_CATEGORICAL_COLUMNS = ("station", "variable", "ingestion_mode")
+
+# temp/dewp/slp/altim already arrive in degC/hPa (verified against the live API,
+# ADR 0003); only wind speed (knots) needs converting, and temperatures go to K.
+_TO_SI: dict[str, Callable[[float], float]] = {
+    "temperature_2m": lambda v: v + 273.15,  # degC -> K
+    "dew_point_2m": lambda v: v + 273.15,  # degC -> K
+    "wind_speed_10m": lambda v: v * 0.514444,  # kt -> m/s
+    "pressure_msl": lambda v: v,  # hPa
+}
+
 
 def _is_corrected(raw_text: str) -> bool:
     return bool(_CORRECTED_PATTERN.search(raw_text))
 
 
-def explode_observation_payload(
+def observation_rows(
     payload: ObservationRawPayload, ingestion_mode: IngestionMode
-) -> pd.DataFrame:
-    """One row per variable. temp/dewp/slp/altim already arrive in degC/hPa
-    (verified against the live API - see ADR 0003); only wind speed (knots)
-    needs converting. Wind *direction* being "VRB" (variable) never affects
-    this - direction isn't one of the 4 stored variables, only speed is."""
+) -> list[dict[str, Any]]:
+    """One row per variable, as plain dicts. A missing value is NaN (never
+    dropped). Wind *direction* being "VRB" (variable) never matters: direction
+    isn't a stored variable, only speed is. A non-numeric value raises ValueError,
+    which the silver consumer routes to the DLQ."""
     report = payload.api_response
     raw_text = str(report.get("rawOb") or "")
 
-    # mean sea-level pressure: prefer the true SLP reduction: fall back to
-    # the altimeter setting (already hPa in this API) when a station doesn't
-    # report SLP in its remarks - common at smaller airports.
+    # mean sea-level pressure: prefer the true SLP reduction; fall back to the
+    # altimeter setting (already hPa in this API) when a station doesn't report
+    # SLP in its remarks - common at smaller airports.
     pressure = report.get("slp")
     if pressure is None:
         pressure = report.get("altim")
 
-    raw_values: dict[str, float | None] = {
+    raw_values = {
         "temperature_2m": report.get("temp"),
         "dew_point_2m": report.get("dewp"),
         "wind_speed_10m": report.get("wspd"),
         "pressure_msl": pressure,
     }
+    observed_at = pd.Timestamp(payload.observed_at)
+    is_corrected = _is_corrected(raw_text)
 
-    tidy = pd.DataFrame(
+    return [
         {
-            "variable": list(raw_values.keys()),
-            "value": pd.Series(list(raw_values.values()), dtype="float64"),
+            "station": payload.station,
+            "observed_at": observed_at,
+            "variable": variable,
+            "value": math.nan if raw is None else _TO_SI[variable](float(raw)),
+            "raw_text": raw_text,
+            "is_corrected": is_corrected,
+            "ingestion_mode": ingestion_mode,
         }
-    )
-    is_temp_like = tidy["variable"].isin(["temperature_2m", "dew_point_2m"])
-    tidy.loc[is_temp_like, "value"] = tidy.loc[is_temp_like, "value"] + 273.15  # degC -> K
-    is_wind = tidy["variable"] == "wind_speed_10m"
-    tidy.loc[is_wind, "value"] = tidy.loc[is_wind, "value"] * 0.514444  # kt -> m/s
+        for variable, raw in raw_values.items()
+    ]
 
-    tidy["station"] = payload.station
-    tidy["observed_at"] = pd.Timestamp(payload.observed_at)
-    tidy["raw_text"] = raw_text
-    tidy["is_corrected"] = _is_corrected(raw_text)
-    tidy["ingestion_mode"] = ingestion_mode
 
-    tidy = tidy.astype(
-        {"station": "category", "variable": "category", "ingestion_mode": "category"}
-    )
-    return tidy[OBSERVATION_COLUMNS]
+def observation_frame(rows: Sequence[dict[str, Any]]) -> pd.DataFrame:
+    """One DataFrame for any number of messages' rows: explicit dtypes, and
+    categoricals for the low-cardinality columns. Extra keys (e.g. the lineage
+    `source_event_id`) are kept."""
+    if not rows:
+        return pd.DataFrame(columns=OBSERVATION_COLUMNS)
+    frame = pd.DataFrame(list(rows))
+    frame["value"] = frame["value"].astype("float64")
+    return frame.astype(dict.fromkeys(_CATEGORICAL_COLUMNS, "category"))
+
+
+def explode_observation_payload(
+    payload: ObservationRawPayload, ingestion_mode: IngestionMode
+) -> pd.DataFrame:
+    """Single-payload convenience wrapper (used by tests and one-off callers);
+    bulk paths should batch `observation_rows` into one `observation_frame`."""
+    return observation_frame(observation_rows(payload, ingestion_mode))[OBSERVATION_COLUMNS]

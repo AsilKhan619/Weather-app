@@ -59,7 +59,8 @@ TOPIC_SPECS: dict[str, TopicSpec] = {
         table="silver.observation",
         key_columns=("station", "observed_at", "variable"),
         time_columns=("observed_at",),
-        to_frame=observation_silver.message_to_frame,
+        # plain frame: reconciliation only needs keys, so skip the categorical casts
+        to_frame=lambda raw: pd.DataFrame(observation_silver.message_to_rows(raw)),
         produced_sources=("observation_producer", "observation_backfill"),
     ),
 }
@@ -123,6 +124,7 @@ def summarize_bronze(spec: TopicSpec, lake_root: Path = DEFAULT_LAKE_ROOT) -> Br
     hash_chunks: list[np.ndarray] = []
 
     for batch in iter_bronze_batches(spec.topic, lake_root):
+        frames: list[pd.DataFrame] = []
         for message in batch:
             messages += 1
             raw = message.value()
@@ -134,10 +136,14 @@ def summarize_bronze(spec: TopicSpec, lake_root: Path = DEFAULT_LAKE_ROOT) -> Br
             except (ValidationError, ValueError, KeyError, TypeError):
                 unparseable += 1  # these are the messages the live consumer sent to the DLQ
                 continue
-            if frame.empty:
-                continue
-            event_ids.add(str(frame["source_event_id"].iloc[0]))
-            hash_chunks.append(key_hashes(frame, spec.key_columns, spec.time_columns))
+            if not frame.empty:
+                frames.append(frame)
+        if not frames:
+            continue
+        # Hash once per batch: per-message pandas work is the expensive part.
+        batch_frame = pd.concat(frames, ignore_index=True)
+        event_ids.update(batch_frame["source_event_id"].astype(str).unique())
+        hash_chunks.append(key_hashes(batch_frame, spec.key_columns, spec.time_columns))
 
     expected = np.unique(np.concatenate(hash_chunks)) if hash_chunks else np.array([], np.uint64)
     return BronzeSummary(messages, len(event_ids), unparseable, expected)

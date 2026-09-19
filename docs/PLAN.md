@@ -55,10 +55,11 @@
 - [x] `replay bronze` (rebuild from the lake) and `replay offsets` (reset a group)
 - [x] `make reconcile` — rebuild-equivalence check, results in `ops.reconciliation_results`
 - [x] `docs/runbook.md`
-- [ ] **Run `make demo` and `make backfill` against the live providers** and confirm several months of history for all 25 locations (needs local Docker; see below)
+- [x] `make demo` (30 days) run against the live providers from a clean checkout on a GitHub runner (`live-demo.yml`): 1,512,000 forecast + 108,376 observation rows, reconcile `MATCH`, 0 NaN — ADR 0004
+- [ ] **Load several *months* of history** (`live-demo.yml` with a larger `days`, then `make backfill`, which spans two days of API budget) and record measured counts here
 
 *Acceptance:*
-- *months of history per location* — **OPEN.** The first real run (GitHub runner, 30 days, 25 locations; `live-demo.yml`) worked for `make up` and for observations (27,094 reports, 0 failures) but 5 of 15 forecast requests failed on truncated responses; fixed by batching locations, not yet re-run cleanly. Then run a longer window / `make backfill` (spans two days — ADR 0004) and record measured row counts and call usage here.
+- *months of history per location* — **PARTLY MET.** 30 days for all 25 locations is loaded and reconciled from a clean checkout on real providers (after fixing a truncated-response failure and a slow observation transform, both found by the real run). "Several months" is not yet run.
 - *reconciliation counts match* — covered by `tests/integration/test_backfill_and_rebuild.py` (poison messages accounted for; missing/extra rows detected).
 - *silver rebuilds from bronze via the runbook* — covered by the same test: truncate both tables, rebuild from a real lake, every row identical. Manual walk-through of `docs/runbook.md` §4 on the real stack still to do.
 

@@ -35,6 +35,8 @@ Talking points appended at the end of each phase (brief §1, "every phase"): the
 
 ## Phase 2: Observations and backfill
 
+**The story worth telling from this phase:** the real run found three problems my tests couldn't - and I measured before fixing. (1) A fresh-clone `.env.example` pointed Kafka at the wrong port and `make up` raced Postgres startup: no test built a `Settings` from the example file, so I added one that pins the example, code defaults and compose ports together (it failed on the old file). (2) The 25-location request came back HTTP 200 with a body truncated mid-JSON at ~692 KB; the API's *size* limit was independent of the *rate* limit I'd designed around, so I batched locations and made a truncated body retryable. (3) Reconciliation and the observation drain ran at ~130 messages/second; profiling showed ~9 ms of pandas overhead per 4-row message, so per-message work became plain Python with one DataFrame per batch (8.9 ms -> 0.05 ms in a transform-only microbenchmark - I'm careful to say that's not the end-to-end gain).
+
 **Concepts demonstrated:**
 
 1. **Reconciliation as rebuild-equivalence, not a count comparison.** Comparing "produced vs consumed" can't work when identical events are legitimately re-produced every poll and an upsert overwrites the lineage id. Instead the job replays the lake in memory through the *same* silver transform and diffs the resulting set of natural keys against silver, reporting rows missing and rows unexplained separately. `MATCH` means "silver has exactly the rows a rebuild would produce" - it checks keys, not values, and I documented that limit rather than let the name overclaim (value-level equality is covered by a separate rebuild-and-compare integration test).

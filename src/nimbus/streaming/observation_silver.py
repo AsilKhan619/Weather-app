@@ -23,7 +23,7 @@ from nimbus.common.settings import get_settings
 from nimbus.common.tables import observation_table
 from nimbus.streaming.cli import parse_drain_flag
 from nimbus.streaming.microbatch import run_microbatch_loop
-from nimbus.transform.observation import explode_observation_payload
+from nimbus.transform.observation import observation_frame, observation_rows
 
 logger = logging.getLogger(__name__)
 
@@ -63,14 +63,24 @@ def upsert_observation_rows(engine: Engine, rows: pd.DataFrame) -> None:
 PoisonHandler = Callable[[KafkaMessageLike, Exception], None]
 
 
-def message_to_frame(raw_value: bytes) -> pd.DataFrame:
-    """Validate one raw observation message and explode it (shared by the live
-    consumer, replay, and reconciliation - one definition of "what silver
-    should contain for this message")."""
+def message_to_rows(raw_value: bytes) -> list[dict[str, Any]]:
+    """Validate one raw observation message into plain row dicts, with the
+    lineage `source_event_id` (shared by the live consumer, replay, and
+    reconciliation - one definition of "what silver should contain for this
+    message"). Deliberately no pandas: this runs once per message, and a
+    DataFrame per 4-row message dominated the whole pipeline (~9 ms each,
+    ADR 0004). Callers batch many messages' rows into one frame."""
     envelope = EventEnvelope[ObservationRawPayload].model_validate_json(raw_value)
-    frame = explode_observation_payload(envelope.payload, envelope.ingestion_mode)
-    frame["source_event_id"] = envelope.event_id
-    return frame
+    rows = observation_rows(envelope.payload, envelope.ingestion_mode)
+    for row in rows:
+        row["source_event_id"] = envelope.event_id
+    return rows
+
+
+def message_to_frame(raw_value: bytes) -> pd.DataFrame:
+    """Single-message frame. Bulk paths use `message_to_rows` and build one
+    frame per batch instead."""
+    return observation_frame(message_to_rows(raw_value))
 
 
 def load_messages(
@@ -78,19 +88,21 @@ def load_messages(
 ) -> int:
     """Validate -> transform -> upsert a batch; returns how many messages loaded.
     Kafka-independent so a replay from the bronze lake reuses it unchanged."""
-    frames: list[pd.DataFrame] = []
+    rows: list[dict[str, Any]] = []
+    loaded = 0
     for msg in messages:
         try:
             raw_value = msg.value()
             if raw_value is None:
                 raise ValueError("message has no value")
-            frames.append(message_to_frame(raw_value))
+            rows.extend(message_to_rows(raw_value))
+            loaded += 1
         except (ValidationError, ValueError, KeyError, TypeError) as exc:
             on_poison(msg, exc)
 
-    if frames:
-        upsert_observation_rows(engine, pd.concat(frames, ignore_index=True))
-    return len(frames)
+    if rows:
+        upsert_observation_rows(engine, observation_frame(rows))
+    return loaded
 
 
 def process_batch(
