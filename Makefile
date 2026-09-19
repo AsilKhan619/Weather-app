@@ -3,9 +3,10 @@
 sync:
 	uv sync --all-extras
 
+# --wait blocks until every service's healthcheck passes; without it the migration
+# below races Postgres startup on a fresh clone.
 up:
-	docker compose up -d
-	@echo "Waiting for services to be healthy..."
+	docker compose up -d --wait
 	docker compose ps
 	$(MAKE) migrate
 	$(MAKE) init-topics
@@ -36,8 +37,10 @@ drain:
 reconcile:
 	uv run python -m nimbus.jobs.reconcile
 
+DEMO_DAYS ?= 30
+
 demo:
-	uv run python -m nimbus.jobs.backfill --days 30
+	uv run python -m nimbus.jobs.backfill --days $(DEMO_DAYS)
 	$(MAKE) drain
 	$(MAKE) reconcile
 	@echo "Demo data loaded into bronze and silver. Query it with:"
