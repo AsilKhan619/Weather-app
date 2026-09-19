@@ -201,7 +201,8 @@ Useful flags: `--days N`, `--full`, `--start-date`, `--end-date`,
 
 ```bash
 make gold                 # incremental: rebuilds only the days that saw new or revised data
-make gold ARGS=--full     # every day (after changing config/locations.yaml or config/gold.yaml)
+make gold ARGS=--full     # force every day (a change to the match tolerance, min lead or the
+                          # location->station mapping already triggers one automatically)
 ```
 
 `gold.forecast_verification` (each forecast value matched to the nearest observation
@@ -222,7 +223,9 @@ docker exec nimbus-postgres psql -U nimbus -d nimbus -c   "select lead_day, roun
   was and the watermark did not move. Read the failing check in
   `ops.quality_results where context like 'gold-build%' and not passed`, fix or replay the
   cause, and re-run.
-- **Verification rows look wrong after a config change:** `--full`.
+- **Silver rows stored before the pressure unit fix** (hPa instead of Pa) trip the hard
+  range check and stop the build at the first day with a pressure match. Replay silver from
+  bronze (§4); a fresh `make demo` is unaffected.
 - `ops.gold_build_log` records, per rebuilt day, how many forecasts were eligible and how
   many found an observation - low matching means a quiet station, not a bug.
 

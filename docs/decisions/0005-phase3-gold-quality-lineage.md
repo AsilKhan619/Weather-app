@@ -76,8 +76,14 @@ The build's unit is one UTC valid date, and re-running it must change nothing.
   a `--full` re-run, and a re-run with a 24-hour lookback leave both gold tables
   identical *including `computed_at`*, and that changing one observation rebuilds
   exactly three days and leaves the other days' rows byte-identical.
-- **Limit:** the station↔location mapping (`silver.dim_location`) is not change-tracked;
-  changing `config/locations.yaml` needs `make gold ARGS=--full`.
+- **Rule changes rebuild everything.** The watermark's name embeds a fingerprint of what
+  changes a day's *meaning* but is not data - match tolerance, minimum lead, and the
+  location→station mapping - so changing any of them finds no watermark and the next run is
+  a full rebuild, instead of silently mixing old and new rules across days. (Found by the
+  independent review: a tolerance change originally left already-built days on the old rule.)
+- **Days with no silver forecasts are left alone.** Retention drops old forecast partitions;
+  a later observation revision would otherwise dirty those days and `sync_rows` would delete
+  the metrics that outlive the forecasts.
 
 `silver.dim_location/dim_model/dim_variable` were added because verification must join
 a forecast's `location_id` to its observing station, a mapping that lived only in
@@ -106,7 +112,9 @@ temperature of 500 K is a unit bug. Bounds live in `config/variables.yaml`.
   at the ~4,300 rows/s assumed in ADR 0004's projection is ~30 s - the live pipeline itself
   was not re-timed).
   A blocking failure quarantines the *whole message* (a provider unit bug affects every
-  value in the payload) via the existing DLQ path (`QualityError` is a `ValueError`).
+  value in the payload) via the existing DLQ path (`QualityError` is a `ValueError`); the DLQ
+  record names the failed check(s), and the sampled rows are in `ops.quality_results`. Every
+  copy of a duplicated event id in the batch is dead-lettered.
   Uniqueness is *not* checked pre-load: a batch may legitimately repeat a key
   (overlapping backfill windows, a report and its correction) and is deduplicated by the
   upsert.

@@ -21,12 +21,15 @@ make demo             # backfill 30 days, drain consumers, reconcile
 make backfill         # full history since 2024-01-01 (spans 2 days of API budget)
 make drain            # run bronze + silver consumers until caught up, then exit
 make reconcile        # produced -> bronze -> silver check; non-zero exit on mismatch
+make gold             # verification + accuracy + leaderboard; incremental and idempotent (ARGS=--full)
+make quality          # pandera checks over changed rows + freshness -> ops.quality_results
+make partitions       # create upcoming monthly silver.forecast partitions; apply retention (ARGS=--dry-run)
 make test             # unit tests (no external services required)
 make test-integration # Testcontainers-based integration tests (needs Docker)
 make lint             # ruff check
 make typecheck        # mypy
 make eval             # AI agent eval suite (evals/agent_questions.yaml)
-make trace EVENT_ID=  # trace one event bronze -> silver -> gold
+make trace EVENT_ID=  # trace one event bronze -> silver -> gold (or SAMPLE=forecast|observation)
 make replay ARGS=...  # `bronze --topic T --truncate` or `offsets --group G --topic T` (docs/runbook.md)
 ```
 
@@ -65,3 +68,14 @@ Run `uv sync` once after cloning to install dependencies (uv manages the virtual
 - **Real providers behave differently from recorded fixtures** (ADR 0004). Open-Meteo returns HTTP 200 with a body truncated mid-JSON for oversized requests (~700 KB), so forecast requests are batched to 10 locations. IEM answers 503 and 429 under load (about 20 of 70 requests), so it uses `patient_http_retry`. Verify any change to request shape or size against the live API, not just mocks.
 - **The live-demo workflow exists**: `gh workflow run live-demo.yml -f days=30` runs the quickstart from a clean checkout against the real providers and writes row counts, the NaN check, reconciliation and timings to the job summary. It spends real API budget (~450 Open-Meteo calls per 30 days), so run it deliberately. It is how `make demo` is exercised when local Docker is unavailable.
 - Open-Meteo bills requests by volume (each 10 variables x 14 days per location = 1 call, fractional) against 600/min and 10,000/day. See ADR 0004 before changing backfill chunk size or throttle.
+
+## Gotchas (Phase 3)
+
+- **Units are SI everywhere in silver** (`config/variables.yaml`): K, m/s, **Pa**. METAR pressure arrives in hPa and *must* be converted (it was not, until the gold layer's first pressure comparison - ADR 0005). A new variable needs a unit conversion on both the forecast and observation side and a bounds entry in `variables.yaml`.
+- **`updated_at` is only bumped when a value actually changes** (`only_if_changed` + `touch_columns` in `upsert_chunks`). Gold's incremental build depends on it; any new silver writer must go through `chunked_upsert(..., only_if_changed=True, touch_columns=("updated_at",))`.
+- **Gold days are synced, not appended** (`sync_rows`): upsert differing rows, delete keys no longer produced. Re-running must leave tables identical including `computed_at`; an integration test asserts it.
+- **pandera dispatches a check by its function's `__name__`**: an inner function called `in_range` silently became pandera's built-in and failed every frame. Never name a custom check function after a pandera built-in.
+- **Blocking failures quarantine the whole message to the DLQ; warnings load.** `reconcile` applies the same gate, otherwise quarantined messages look like data loss. Don't add a blocking check that fixtures or real provider data can legitimately violate (a negative lead did - it is a warning now).
+- **`silver.forecast` is a partitioned table** (monthly, `valid_time`). `ctid` is only unique per partition, so never use it to pick "one row"; the primary key includes `valid_time` as Postgres requires. Rows outside the created months go to `forecast_default` - run `make partitions`.
+- **Two test files must not share a basename** across `tests/unit` and `tests/integration` (no `__init__.py`; mypy and pytest both refuse).
+- **Local Docker was down for all of Phase 3** (stale `sailor-ingest.sock`); Postgres/Kafka behaviour was verified by CI's Testcontainers job. Migration 0008 (copy-and-swap partitioning) has only run there.

@@ -458,3 +458,39 @@ def test_trace_follows_an_observation_from_bronze_to_the_gold_metric_it_fed(
     assert later.silver_current == 0
     assert later.silver_by_event == {"evt-revised": 4}
     assert "overwritten by event evt-revised" in format_trace(later)
+
+
+# --- review follow-ups ------------------------------------------------------------
+
+
+def test_gold_survives_the_silver_forecasts_it_was_built_from_being_dropped(
+    engine: Engine,
+) -> None:
+    """Retention drops old silver forecast partitions; a late observation revision then
+    dirties those days. The rebuild must not delete the metrics they produced."""
+    _seed(engine, days=2)
+    build_gold(engine, config=CONFIG)
+    accuracy = _accuracy(engine)
+    assert accuracy
+
+    with engine.begin() as conn:
+        conn.execute(text("TRUNCATE silver.forecast"))  # as if the months had been dropped
+    upsert_observation_rows(engine, _observation_rows(FIRST_DAY, value=279.0, event="late"))
+    result = build_gold(engine, config=CONFIG)
+
+    assert FIRST_DAY in [d.valid_date for d in result.days]  # it was rebuilt...
+    assert _accuracy(engine) == accuracy  # ...without erasing the history
+
+
+def test_changing_the_matching_rules_triggers_a_full_rebuild(engine: Engine) -> None:
+    _seed(engine, days=3)
+    build_gold(engine, config=CONFIG)
+    assert build_gold(engine, config=CONFIG).days == []  # same rules: nothing to do
+
+    stricter = GoldConfig(
+        observation_match_tolerance_minutes=10, min_lead_hours=1, lookback_hours=0
+    )
+    result = build_gold(engine, config=stricter)
+
+    assert result.run_kind == "full"  # no watermark for these rules, so every day is redone
+    assert len(result.days) == 3

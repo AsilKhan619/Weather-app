@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from nimbus.quality.runner import CheckResult, validate_frame
+from nimbus.quality.runner import SUMMARY_CHECK, CheckResult, validate_frame
 from nimbus.quality.schemas import TableChecks
 
 EVENT_COLUMN = "source_event_id"
@@ -26,6 +26,19 @@ class Gate:
     @property
     def failed(self) -> list[CheckResult]:
         return [r for r in self.results if not r.passed]
+
+    @property
+    def reason(self) -> str:
+        """Why messages were quarantined, for the DLQ record; the per-check detail
+        (which rows, which values) is in ops.quality_results."""
+        checks = sorted(
+            {
+                r.check
+                for r in self.results
+                if r.severity == "blocking" and not r.passed and r.check != SUMMARY_CHECK
+            }
+        )
+        return "failed blocking quality check(s): " + ", ".join(checks or ["unknown"])
 
 
 def gate_frame(frame: pd.DataFrame, checks: TableChecks) -> Gate:

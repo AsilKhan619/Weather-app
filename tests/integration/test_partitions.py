@@ -23,8 +23,15 @@ _INIT = datetime(2023, 1, 1, tzinfo=UTC)
 @pytest.fixture
 def engine(pg_settings: Settings) -> Iterator[Engine]:
     eng = make_engine(pg_settings)
+    _truncate(eng)
     yield eng
+    _truncate(eng)
     eng.dispose()
+
+
+def _truncate(engine: Engine) -> None:
+    with engine.begin() as conn:
+        conn.execute(text("TRUNCATE silver.forecast"))
 
 
 def _rows(*valid_times: datetime, value: float = 1.0) -> pd.DataFrame:

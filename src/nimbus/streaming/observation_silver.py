@@ -5,6 +5,7 @@ natural key never includes raw_text, so "keep the latest version of
 corrected reports" falls out of the upsert for free."""
 
 import logging
+from collections import defaultdict
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -94,27 +95,32 @@ def load_messages(
     """Validate -> transform -> upsert a batch; returns how many messages loaded.
     Kafka-independent so a replay from the bronze lake reuses it unchanged."""
     rows: list[dict[str, Any]] = []
-    by_event: dict[str, KafkaMessageLike] = {}
+    by_event: dict[str, list[KafkaMessageLike]] = defaultdict(list)
+    loaded = 0
     for msg in messages:
         try:
             raw_value = msg.value()
             if raw_value is None:
                 raise ValueError("message has no value")
             message_rows = message_to_rows(raw_value)
-            rows.extend(message_rows)
-            by_event[str(message_rows[0]["source_event_id"])] = msg
         except (ValidationError, ValueError, KeyError, TypeError) as exc:
             on_poison(msg, exc)
+            continue
+        loaded += 1
+        rows.extend(message_rows)
+        by_event[str(message_rows[0]["source_event_id"])].append(msg)
 
     if not rows:
-        return 0
+        return loaded
     gate = gate_frame(observation_frame(rows), silver_observation_gate())
     for event_id in sorted(gate.blocked_events):
-        on_poison(by_event[event_id], QualityError("failed a blocking quality check"))
+        for msg in by_event[event_id]:  # the same report can appear twice in one batch
+            on_poison(msg, QualityError(gate.reason))
+            loaded -= 1
     if gate.failed:
         persist_results(engine, gate.failed, context="silver-observation batch", only_failures=True)
     upsert_observation_rows(engine, gate.clean)
-    return len(by_event) - len(gate.blocked_events)
+    return loaded
 
 
 def process_batch(

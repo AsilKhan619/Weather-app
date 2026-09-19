@@ -79,7 +79,7 @@ def _months_in_default(conn: Connection) -> list[date]:
 
 def _create_partition(conn: Connection, month: date) -> None:
     name, following = partition_name(month), add_months(month, 1)
-    bounds = f"FROM ('{month}') TO ('{following}')"
+    bounds = f"FOR VALUES FROM ('{month}') TO ('{following}')"
     in_range = f"valid_time >= '{month}' AND valid_time < '{following}'"
     # Names and dates are generated here, never taken from input.
     like = "LIKE silver.forecast INCLUDING DEFAULTS INCLUDING CONSTRAINTS"

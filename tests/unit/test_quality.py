@@ -12,7 +12,8 @@ import pytest
 from test_observation_silver import _message, _Msg
 
 from nimbus.common.config import load_variables
-from nimbus.common.schemas import ObservationRawPayload
+from nimbus.common.events import EventEnvelope
+from nimbus.common.schemas import ForecastRawPayload, ObservationRawPayload
 from nimbus.gold.verification import verify_forecasts
 from nimbus.quality.gate import gate_frame
 from nimbus.quality.runner import (
@@ -28,7 +29,7 @@ from nimbus.quality.schemas import (
     observation_checks,
     verification_checks,
 )
-from nimbus.streaming import observation_silver
+from nimbus.streaming import forecast_silver, observation_silver
 from nimbus.transform.observation import observation_frame, observation_rows
 
 VARIABLES = load_variables()
@@ -302,3 +303,50 @@ def test_merge_results_adds_rows_across_chunks() -> None:
     assert (merged["c"].rows_checked, merged["c"].rows_failed) == (150, 3)
     assert merged["c"].detail == "first"
     assert merged["d"].passed
+
+
+def test_a_duplicated_quarantined_event_sends_every_copy_to_the_dlq(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Event ids are deterministic, so the same report can be in one batch twice."""
+    captured: list[pd.DataFrame] = []
+    monkeypatch.setattr(
+        observation_silver, "upsert_observation_rows", lambda e, f: captured.append(f)
+    )
+    monkeypatch.setattr(observation_silver, "persist_results", lambda *a, **k: None)
+    bad = _message(1).replace(b'"temp":21.0', b'"temp":900.0')
+    poisoned: list[Exception] = []
+
+    loaded = observation_silver.load_messages(
+        [_Msg(_message(0)), _Msg(bad), _Msg(bad)], MagicMock(), lambda m, e: poisoned.append(e)
+    )
+
+    assert loaded == 1
+    assert len(poisoned) == 2  # neither copy is silently lost
+    assert "hard_range" in str(poisoned[0])  # the DLQ record names the failed check
+    assert set(captured[0]["source_event_id"]) == {"e0"}
+
+
+def test_a_forecast_answer_with_no_hours_is_not_poison(monkeypatch: pytest.MonkeyPatch) -> None:
+    upserts: list[pd.DataFrame] = []
+    monkeypatch.setattr(forecast_silver, "upsert_forecast_rows", lambda e, f: upserts.append(f))
+    envelope = EventEnvelope[ForecastRawPayload](
+        event_id="empty",
+        source="forecast_producer",
+        event_type="forecast.raw",
+        produced_at=datetime(2026, 9, 17, tzinfo=UTC),
+        ingestion_mode="live",
+        payload=ForecastRawPayload(
+            model="gfs_seamless",
+            location_id="sfo",
+            run=datetime(2026, 9, 17, 12, tzinfo=UTC),
+            api_response={"hourly": {"time": [], "temperature_2m": []}},
+        ),
+    )
+    poisoned: list[Exception] = []
+
+    loaded = forecast_silver.load_messages(
+        [_Msg(envelope.model_dump_json().encode())], MagicMock(), lambda m, e: poisoned.append(e)
+    )
+
+    assert (loaded, poisoned, upserts) == (1, [], [])

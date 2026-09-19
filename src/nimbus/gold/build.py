@@ -15,6 +15,8 @@ value differs, and rows the day no longer produces (an observation corrected awa
 a forecast withdrawn) are deleted. Rebuilding an unchanged day writes nothing, so
 a re-run leaves every table byte-for-byte as it was."""
 
+import hashlib
+import json
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -97,10 +99,31 @@ def _utc(frame: pd.DataFrame, columns: Sequence[str]) -> pd.DataFrame:
     return frame
 
 
-def read_watermark(conn: Connection) -> datetime | None:
+def read_watermark(conn: Connection, job: str) -> datetime | None:
     return conn.execute(
-        select(job_state_table.c.watermark).where(job_state_table.c.job == JOB_NAME)
+        select(job_state_table.c.watermark).where(job_state_table.c.job == job)
     ).scalar()
+
+
+def job_name(conn: Connection, config: GoldConfig) -> str:
+    """The watermark's name embeds a fingerprint of everything that changes what a day
+    *means* but is not data: the match tolerance, the minimum lead, and the
+    location -> station mapping. Change any of them and the job finds no watermark, so
+    the next run is a full rebuild instead of silently mixing old and new rules across
+    days. (The lookback only affects how much is re-read, so it is not part of it.)"""
+    stations = conn.execute(
+        select(dim_location_table.c.location_id, dim_location_table.c.station).order_by(
+            dim_location_table.c.location_id
+        )
+    ).all()
+    payload = json.dumps(
+        [
+            config.observation_match_tolerance_minutes,
+            config.min_lead_hours,
+            [list(r) for r in stations],
+        ]
+    )
+    return f"{JOB_NAME}:{hashlib.sha256(payload.encode()).hexdigest()[:12]}"
 
 
 def days_to_build(conn: Connection, *, since: datetime | None, tolerance: timedelta) -> list[date]:
@@ -226,6 +249,11 @@ def build_day(conn: Connection, day: date, config: GoldConfig, run_kind: RunKind
     tolerance = timedelta(minutes=config.observation_match_tolerance_minutes)
 
     forecasts = _read_forecasts(conn, start, end)
+    if forecasts.empty:
+        # Nothing to score. Leave any existing gold rows alone: silver's forecasts for a
+        # day can be gone on purpose (retention drops old months), and gold keeps the
+        # metrics that outlive them.
+        return DayResult(valid_date=day, eligible=0, matched=0, quality=[])
     observations = _read_observations(conn, start, end, tolerance)
     stations = pd.DataFrame(
         conn.execute(select(dim_location_table.c.location_id, dim_location_table.c.station))
@@ -257,7 +285,11 @@ def build_day(conn: Connection, day: date, config: GoldConfig, run_kind: RunKind
     blocking = [r for r in quality if r.severity == "blocking" and not r.passed]
     if blocking:
         names = ", ".join(sorted({f"{r.table}:{r.check}" for r in blocking}))
-        raise QualityError(f"gold build for {day} failed blocking checks: {names}", quality)
+        raise QualityError(
+            f"gold build for {day} failed blocking checks: {names} "
+            "(fix or replay the offending silver rows - docs/runbook.md sections 4 and 7)",
+            quality,
+        )
 
     v = forecast_verification_table.c
     sync_rows(
@@ -301,7 +333,8 @@ def build_gold(
         # Snapshot before reading anything: rows landing while we build are picked up
         # by the next run rather than lost between "read" and "advance".
         snapshot: datetime = conn.execute(text("SELECT now()")).scalar_one()
-        watermark = read_watermark(conn)
+        job = job_name(conn, config)
+        watermark = read_watermark(conn, job)
         since = (
             None
             if full or watermark is None
@@ -337,6 +370,6 @@ def build_gold(
                 "ON CONFLICT (job) DO UPDATE SET watermark = excluded.watermark, "
                 "updated_at = now()"
             ),
-            {"job": JOB_NAME, "wm": snapshot},
+            {"job": job, "wm": snapshot},
         )
     return BuildResult(run_kind=run_kind, days=results, watermark=snapshot)

@@ -117,12 +117,17 @@ def find_in_bronze(event_id: str, lake_root: Path = DEFAULT_LAKE_ROOT) -> list[B
 
 
 def sample_event_id(topic: str, lake_root: Path = DEFAULT_LAKE_ROOT) -> str | None:
-    """The first event of the newest bronze file - something to trace in a demo."""
+    """The first parseable event of the newest bronze file - something to trace in a
+    demo. (The lake also holds the malformed messages that went to the DLQ.)"""
     files = list_bronze_files(topic, lake_root)
     if not files:
         return None
-    values = pq.read_table(files[-1]).column("value").to_pylist()
-    return str(json.loads(values[0])["event_id"]) if values and values[0] else None
+    for raw in pq.read_table(files[-1]).column("value").to_pylist():
+        try:
+            return str(json.loads(raw)["event_id"])
+        except (TypeError, ValueError, KeyError):
+            continue
+    return None
 
 
 def _key_arrays(frame: pd.DataFrame, columns: dict[str, str]) -> dict[str, list[Any]]:

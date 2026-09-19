@@ -4,6 +4,7 @@ to weather.dlq.v1 with the reason and never blocks the partition - the rest
 of the batch still gets written."""
 
 import logging
+from collections import defaultdict
 from collections.abc import Callable, Sequence
 
 import pandas as pd
@@ -88,27 +89,33 @@ def load_messages(
     fails validation or transformation goes to `on_poison` and never blocks the
     rest of the batch."""
     frames: list[pd.DataFrame] = []
-    by_event: dict[str, KafkaMessageLike] = {}
+    by_event: dict[str, list[KafkaMessageLike]] = defaultdict(list)
+    loaded = 0
     for msg in messages:
         try:
             raw_value = msg.value()
             if raw_value is None:
                 raise ValueError("message has no value")
             frame = message_to_frame(raw_value)
-            frames.append(frame)
-            by_event[str(frame["source_event_id"].iloc[0])] = msg
         except (ValidationError, ValueError, KeyError, TypeError) as exc:
             on_poison(msg, exc)
+            continue
+        loaded += 1
+        if not frame.empty:  # an API answer with no hours loads nothing, and is not poison
+            frames.append(frame)
+            by_event[str(frame["source_event_id"].iloc[0])].append(msg)
 
     if not frames:
-        return 0
+        return loaded
     gate = gate_frame(pd.concat(frames, ignore_index=True), silver_forecast_gate())
     for event_id in sorted(gate.blocked_events):
-        on_poison(by_event[event_id], QualityError("failed a blocking quality check"))
+        for msg in by_event[event_id]:  # the same event can appear twice in one batch
+            on_poison(msg, QualityError(gate.reason))
+            loaded -= 1
     if gate.failed:
         persist_results(engine, gate.failed, context="silver-forecast batch", only_failures=True)
     upsert_forecast_rows(engine, gate.clean)
-    return len(frames) - len(gate.blocked_events)
+    return loaded
 
 
 def process_batch(

@@ -195,6 +195,8 @@ def silver_key_hashes(
             params = {"valid_from": valid_from}
         query = text(f"SELECT {columns} FROM {spec.table}{where}")
         for chunk in pd.read_sql(query, conn, params=params, chunksize=chunksize):
+            if chunk.empty:
+                continue
             chunks.append(key_hashes(chunk, spec.key_columns, spec.time_columns))
     return np.unique(np.concatenate(chunks)) if chunks else np.array([], np.uint64)
 
