@@ -64,3 +64,33 @@ def module_stack() -> Iterator[Stack]:
     load. Tests using it must leave the data in a consistent state."""
     with _running_stack() as running:
         yield running
+
+
+@pytest.fixture(scope="module")
+def pg_settings() -> Iterator[Settings]:
+    """Postgres only (migrated) - for tests of SQL-level behaviour that never touch
+    Kafka, which is most of the startup cost. Tests share it and clean up after
+    themselves."""
+    with PostgresContainer("postgres:18.6-alpine") as pg:
+        pg_env = {
+            **os.environ,
+            "POSTGRES_HOST": pg.get_container_host_ip(),
+            "POSTGRES_PORT": str(pg.get_exposed_port(5432)),
+            "POSTGRES_DB": pg.dbname,
+            "POSTGRES_USER": pg.username,
+            "POSTGRES_PASSWORD": pg.password,
+        }
+        subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            cwd=REPO_ROOT,
+            env=pg_env,
+            check=True,
+        )
+        yield Settings(
+            _env_file=None,
+            postgres_host=pg.get_container_host_ip(),
+            postgres_port=int(pg.get_exposed_port(5432)),
+            postgres_db=pg.dbname,
+            postgres_user=pg.username,
+            postgres_password=pg.password,
+        )
