@@ -35,7 +35,7 @@ def test_converts_units_to_si() -> None:
     assert _value(df, "temperature_2m") == pytest.approx(300.35)  # 27.2 degC -> K
     assert _value(df, "dew_point_2m") == pytest.approx(283.15)
     assert _value(df, "wind_speed_10m") == pytest.approx(7.0 * 0.514444)
-    assert _value(df, "pressure_msl") == pytest.approx(1014.1)
+    assert _value(df, "pressure_msl") == pytest.approx(101410.0)  # hPa -> Pa
 
 
 def test_falls_back_to_altimeter_when_slp_missing() -> None:
@@ -50,7 +50,7 @@ def test_falls_back_to_altimeter_when_slp_missing() -> None:
     )
     df = explode_observation_payload(payload, "live")
 
-    assert _value(df, "pressure_msl") == pytest.approx(1013.0)
+    assert _value(df, "pressure_msl") == pytest.approx(101300.0)  # altimeter fallback, hPa -> Pa
 
 
 def test_missing_fields_become_nan_not_dropped() -> None:

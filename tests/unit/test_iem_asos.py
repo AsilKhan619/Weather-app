@@ -60,7 +60,7 @@ def test_normalized_rows_flow_through_the_existing_observation_transform() -> No
     by_var = df.set_index("variable")["value"]
     assert by_var["temperature_2m"] == pytest.approx(20.56 + 273.15)
     assert by_var["wind_speed_10m"] == pytest.approx(5.0 * 0.514444)
-    assert by_var["pressure_msl"] == pytest.approx(1011.4)  # true SLP preferred
+    assert by_var["pressure_msl"] == pytest.approx(101140.0)  # true SLP preferred, hPa -> Pa
     assert (df["ingestion_mode"] == "backfill").all()
 
 

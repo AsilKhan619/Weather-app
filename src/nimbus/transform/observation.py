@@ -36,13 +36,15 @@ OBSERVATION_COLUMNS = [
 
 _CATEGORICAL_COLUMNS = ("station", "variable", "ingestion_mode")
 
-# temp/dewp/slp/altim already arrive in degC/hPa (verified against the live API,
-# ADR 0003); only wind speed (knots) needs converting, and temperatures go to K.
+# temp/dewp/slp/altim arrive in degC/hPa (verified against the live API, ADR 0003);
+# everything is converted to the SI units the forecast side uses (config/variables.yaml)
+# so a gold-layer error is always a difference in one unit. Pressure was left in hPa
+# here until the gold layer's first pressure verification (ADR 0005).
 _TO_SI: dict[str, Callable[[float], float]] = {
     "temperature_2m": lambda v: v + 273.15,  # degC -> K
     "dew_point_2m": lambda v: v + 273.15,  # degC -> K
     "wind_speed_10m": lambda v: v * 0.514444,  # kt -> m/s
-    "pressure_msl": lambda v: v,  # hPa
+    "pressure_msl": lambda v: v * 100.0,  # hPa -> Pa
 }
 
 
