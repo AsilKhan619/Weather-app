@@ -57,6 +57,8 @@ def upsert_observation_rows(engine: Engine, rows: pd.DataFrame) -> None:
         _UPDATE_COLUMNS,
         records,
         update_where=_may_overwrite,
+        only_if_changed=True,
+        touch_columns=("updated_at",),
     )
 
 

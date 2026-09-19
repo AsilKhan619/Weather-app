@@ -1,4 +1,4 @@
-"""Typed loaders for the YAML files under config/ (locations, models)."""
+"""Typed loaders for the YAML files under config/ (locations, models, variables, gold)."""
 
 from pathlib import Path
 
@@ -41,3 +41,25 @@ def load_locations(path: Path = CONFIG_DIR / "locations.yaml") -> list[Location]
 def load_models_config(path: Path = CONFIG_DIR / "models.yaml") -> ModelsConfig:
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     return ModelsConfig.model_validate(raw)
+
+
+class VariableSpec(BaseModel):
+    name: str
+    unit: str
+    description: str
+
+
+class GoldConfig(BaseModel):
+    observation_match_tolerance_minutes: int
+    min_lead_hours: int
+    lookback_hours: int
+
+
+def load_variables(path: Path = CONFIG_DIR / "variables.yaml") -> list[VariableSpec]:
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return [VariableSpec.model_validate(entry) for entry in raw["variables"]]
+
+
+def load_gold_config(path: Path = CONFIG_DIR / "gold.yaml") -> GoldConfig:
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return GoldConfig.model_validate(raw)

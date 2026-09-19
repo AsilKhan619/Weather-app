@@ -7,7 +7,17 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import ColumnElement, Engine, Table, create_engine, text
+from sqlalchemy import (
+    ColumnElement,
+    Connection,
+    Engine,
+    Table,
+    and_,
+    create_engine,
+    func,
+    or_,
+    text,
+)
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -71,8 +81,8 @@ def nan_to_none(records: list[dict[Any, Any]]) -> list[dict[Any, Any]]:
     ]
 
 
-def chunked_upsert(
-    engine: Engine,
+def upsert_chunks(
+    conn: Connection,
     table: Table,
     conflict_columns: Sequence[str],
     update_columns: Sequence[str],
@@ -83,26 +93,80 @@ def chunked_upsert(
     *,
     chunk_size: int = UPSERT_CHUNK_SIZE,
     update_where: Callable[[Any], ColumnElement[bool]] | None = None,
+    only_if_changed: bool = False,
+    touch_columns: Sequence[str] = (),
 ) -> None:
-    """INSERT ... ON CONFLICT DO UPDATE, chunked to stay under Postgres's
-    bound-parameter limit. Shared by every silver consumer's load step.
+    """INSERT ... ON CONFLICT DO UPDATE on an existing connection, chunked to stay
+    under Postgres's bound-parameter limit - so a caller can run it in the same
+    transaction as other statements (gold deletes a day and re-inserts it atomically).
 
     `update_where` receives the `excluded` row and returns a condition that must
     hold for an existing row to be overwritten - used to stop a stale report from
-    clobbering a newer one already stored (see observation_silver)."""
+    clobbering a newer one already stored (see observation_silver).
+
+    `only_if_changed` additionally requires at least one of `update_columns` to
+    differ, so re-applying identical data (a redelivered message, a replay) writes
+    nothing. `touch_columns` are set to now() when a row *is* updated - together
+    they make `updated_at` a trustworthy "this row changed" signal for incremental
+    builds (ADR 0005)."""
     if not records:
         return
     records = nan_to_none(records)
-    with engine.begin() as conn:
-        for start in range(0, len(records), chunk_size):
-            chunk = records[start : start + chunk_size]
-            stmt = pg_insert(table).values(chunk)
-            stmt = stmt.on_conflict_do_update(
-                index_elements=conflict_columns,
-                set_={col: getattr(stmt.excluded, col) for col in update_columns},
-                where=update_where(stmt.excluded) if update_where is not None else None,
+    for start in range(0, len(records), chunk_size):
+        chunk = records[start : start + chunk_size]
+        stmt = pg_insert(table).values(chunk)
+        set_: dict[str, Any] = {col: getattr(stmt.excluded, col) for col in update_columns}
+        for col in touch_columns:
+            set_[col] = func.now()
+
+        conditions: list[ColumnElement[bool]] = []
+        if update_where is not None:
+            conditions.append(update_where(stmt.excluded))
+        if only_if_changed:
+            conditions.append(
+                or_(
+                    *(
+                        table.c[col].is_distinct_from(getattr(stmt.excluded, col))
+                        for col in update_columns
+                    )
+                )
             )
-            conn.execute(stmt)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=conflict_columns,
+            set_=set_,
+            where=and_(*conditions) if conditions else None,
+        )
+        conn.execute(stmt)
+
+
+def chunked_upsert(
+    engine: Engine,
+    table: Table,
+    conflict_columns: Sequence[str],
+    update_columns: Sequence[str],
+    records: list[dict[Any, Any]],
+    *,
+    chunk_size: int = UPSERT_CHUNK_SIZE,
+    update_where: Callable[[Any], ColumnElement[bool]] | None = None,
+    only_if_changed: bool = False,
+    touch_columns: Sequence[str] = (),
+) -> None:
+    """`upsert_chunks` in its own transaction. Shared by every silver consumer's
+    load step."""
+    if not records:
+        return
+    with engine.begin() as conn:
+        upsert_chunks(
+            conn,
+            table,
+            conflict_columns,
+            update_columns,
+            records,
+            chunk_size=chunk_size,
+            update_where=update_where,
+            only_if_changed=only_if_changed,
+            touch_columns=touch_columns,
+        )
 
 
 def make_session_factory(engine: Engine) -> sessionmaker[Session]:

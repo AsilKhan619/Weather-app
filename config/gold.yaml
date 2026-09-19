@@ -1,0 +1,17 @@
+# Verification and incremental-build settings (brief section 7, ADR 0005).
+
+# A forecast valid at time T is matched to the nearest observation of the same
+# station and variable within this tolerance (pandas.merge_asof, direction
+# "nearest"). METARs are typically filed a few minutes before the hour, so 30
+# minutes matches every routine report and rejects a station that has gone quiet
+# rather than comparing a forecast to hours-old data.
+observation_match_tolerance_minutes: 30
+
+# Lead 0 is the model's analysis at its own initialisation time, not a
+# forecast; including it would flatter the shortest bucket.
+min_lead_hours: 1
+
+# The incremental job re-reads changes newer than (last watermark - lookback).
+# The lookback covers transactions that committed after the watermark was taken
+# but carry an earlier `updated_at` (now() is the transaction START time).
+lookback_hours: 1

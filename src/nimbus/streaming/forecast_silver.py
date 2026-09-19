@@ -61,7 +61,15 @@ def upsert_forecast_rows(engine: Engine, rows: pd.DataFrame) -> None:
         return
     rows = dedupe_on_key(rows, _CONFLICT_COLUMNS)
     records = rows.astype(dict.fromkeys(_STRING_COLUMNS, "string")).to_dict("records")
-    chunked_upsert(engine, forecast_table, _CONFLICT_COLUMNS, _UPDATE_COLUMNS, records)
+    chunked_upsert(
+        engine,
+        forecast_table,
+        _CONFLICT_COLUMNS,
+        _UPDATE_COLUMNS,
+        records,
+        only_if_changed=True,
+        touch_columns=("updated_at",),
+    )
 
 
 PoisonHandler = Callable[[KafkaMessageLike, Exception], None]

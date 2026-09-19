@@ -1,0 +1,16 @@
+# The four verified variables (brief section 5) and their stored (SI) units.
+# Forecast and observation values are converted to these before they reach
+# silver, so an error in gold is always a difference in the same unit.
+variables:
+  - name: temperature_2m
+    unit: K
+    description: Air temperature at 2 m
+  - name: dew_point_2m
+    unit: K
+    description: Dew point temperature at 2 m
+  - name: wind_speed_10m
+    unit: m/s
+    description: Wind speed at 10 m
+  - name: pressure_msl
+    unit: Pa
+    description: Mean sea-level pressure
