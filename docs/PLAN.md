@@ -66,13 +66,23 @@
 
 ## Phase 3 — Gold layer and data quality
 
-- [ ] `forecast_verification` via `merge_asof`
-- [ ] `accuracy_daily`, incremental recompute
-- [ ] pandera checks, freshness monitoring
-- [ ] `make trace`
-- [ ] Monthly partitioning + retention policy for `silver.forecast` (per volume estimate in ADR 0001)
+Built in three slices (3a gold, 3b quality, 3c lineage + partitioning), each pushed and checked in CI. Design: [ADR 0005](decisions/0005-phase3-gold-quality-lineage.md).
 
-*Acceptance: error rises with lead time; jobs idempotent; an event traces end to end.*
+- [x] `forecast_verification` via `merge_asof` (nearest observation within 30 min, error = forecast − observed, whole-day lead bucket); `silver.dim_*` tables for the station join
+- [x] `accuracy_daily` and the `model_leaderboard` view (rolling 7/30 days, exact weighted aggregates)
+- [x] Incremental recompute (watermark on `updated_at`, lookback, ±1-day observation expansion, config-fingerprinted watermark) and idempotent (days synced, not appended; re-run leaves tables identical)
+- [x] pandera checks before every load — blocking vs warning, hard vs plausible ranges — results in `ops.quality_results`; silver consumers quarantine to the DLQ, gold aborts the day, `reconcile` applies the same gate
+- [x] Freshness monitoring (per station, per live source) and `make quality`
+- [x] `make trace` (API request → topic/partition/offset → bronze file → silver → gold verification and accuracy rows)
+- [x] Monthly partitioning of `silver.forecast` (migration 0008, `make partitions`) and a retention policy (implemented, **off by default**; `reconcile` compares only the retained window)
+- [x] Independent review of the phase diff against this plan: 1 high, 2 medium, 3 low findings; all six fixed with tests (empty forecast payload crash, config change not rebuilding, retention erasing gold history, duplicate-event quarantine, DLQ reason, hPa data migration note)
+- [x] Bug found and fixed on the way: METAR pressure was stored in hPa next to forecasts in Pa
+
+*Acceptance:*
+- *jobs idempotent* — **MET**, integration-tested (an incremental re-run, `--full`, and a 24-hour-lookback re-run leave both gold tables identical, `computed_at` included; a one-observation change rebuilds exactly three days) and re-checked on real data by the live-demo workflow (checksum before/after).
+- *an event traces end to end* — **MET**, integration-tested against a real lake (bronze → silver → gold, including "overwritten by a later event") and on real events in the live demo.
+- *results plausible: error rises with lead time* — see the live-demo result recorded in ADR 0005 / the interview notes (synthetic data proves the mechanism; only real providers prove plausibility).
+- Local Docker was unavailable, so all Postgres/Kafka behaviour was verified in CI (179 unit + 34 integration tests).
 
 ## Phase 4 — Streaming alerts and dashboard v1
 

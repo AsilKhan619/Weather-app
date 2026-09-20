@@ -62,6 +62,18 @@ jobs:
           echo "after:  $after"
           [ "$before" = "$after" ] || { echo "gold changed on re-run"; exit 1; }
 
+      - name: Trace real events (bronze -> silver -> gold)
+        run: |
+          {
+            echo "## make trace on real events"
+            for kind in forecast observation; do
+              echo "### $kind"
+              echo '```'
+              make --no-print-directory trace SAMPLE=$kind
+              echo '```'
+            done
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Summarize results
         if: always()
         run: |
@@ -112,6 +124,10 @@ jobs:
             echo "### Data quality: quarantined or flagged by the consumers"
             echo '```'
             q "select context, table_name, check_name, severity, sum(rows_failed) as rows_failed, count(*) as batches from ops.quality_results where context like 'silver-%' group by 1, 2, 3, 4 order by 1, 2, 3"
+            echo '```'
+            echo "### Data quality: what the consumers quarantined (sample rows)"
+            echo '```'
+            q "select table_name, check_name, severity, left(detail, 300) as sample from ops.quality_results where context like 'silver-%' and severity = 'blocking' and check_name <> 'all_checks' order by id limit 5"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           cat "$GITHUB_STEP_SUMMARY"
