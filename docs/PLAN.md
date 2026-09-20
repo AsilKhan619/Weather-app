@@ -75,13 +75,14 @@ Built in three slices (3a gold, 3b quality, 3c lineage + partitioning), each pus
 - [x] Freshness monitoring (per station, per live source) and `make quality`
 - [x] `make trace` (API request → topic/partition/offset → bronze file → silver → gold verification and accuracy rows)
 - [x] Monthly partitioning of `silver.forecast` (migration 0008, `make partitions`) and a retention policy (implemented, **off by default**; `reconcile` compares only the retained window)
+- [x] Real-provider run (30 days + a 3-day `make trace` run): reconcile `MATCH`, gold re-run identical, the quality gate quarantined 3 of 27,102 real observation messages (a truncated IEM METAR)
 - [x] Independent review of the phase diff against this plan: 1 high, 2 medium, 3 low findings; all six fixed with tests (empty forecast payload crash, config change not rebuilding, retention erasing gold history, duplicate-event quarantine, DLQ reason, hPa data migration note)
 - [x] Bug found and fixed on the way: METAR pressure was stored in hPa next to forecasts in Pa
 
 *Acceptance:*
 - *jobs idempotent* — **MET**, integration-tested (an incremental re-run, `--full`, and a 24-hour-lookback re-run leave both gold tables identical, `computed_at` included; a one-observation change rebuilds exactly three days) and re-checked on real data by the live-demo workflow (checksum before/after).
 - *an event traces end to end* — **MET**, integration-tested against a real lake (bronze → silver → gold, including "overwritten by a later event") and on real events in the live demo.
-- *results plausible: error rises with lead time* — see the live-demo result recorded in ADR 0005 / the interview notes (synthetic data proves the mechanism; only real providers prove plausibility).
+- *results plausible: error rises with lead time* — **MET on real data** (30 days, 25 locations, 1.43M verified values): MAE rises monotonically from lead day 1 to 7 for temperature (1.44 → 2.16 K), dew point, wind and pressure; ICON < ECMWF < GFS for day-1 temperature that month. Numbers, timings and the real METAR truncation the quality gate caught are in ADR 0005.
 - Local Docker was unavailable, so all Postgres/Kafka behaviour was verified in CI (179 unit + 34 integration tests).
 
 ## Phase 4 — Streaming alerts and dashboard v1

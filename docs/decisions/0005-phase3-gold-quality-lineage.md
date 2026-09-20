@@ -180,10 +180,59 @@ one partition per month.**
   between retention and "silver is exactly what a rebuild produces" is real, and resolved by
   making the window explicit rather than by weakening the check.
 
+## Results on the real providers
+
+`live-demo.yml` (30 days, 25 locations, from a clean checkout on a GitHub runner, run
+35476662840; then a 3-day run for `make trace`, run 35478205782):
+
+- **Load and reconciliation:** 1,512,000 forecast + 108,396 observation rows; `make up` ran
+  migration 0008 on a fresh database; reconcile `MATCH` on both topics, with 3 of 27,102
+  observation messages "unparseable" - see the quality result below.
+- **Verification:** 1,430,440 of 1,440,000 eligible forecast values found an observation
+  within 30 minutes (99.3%; the rest are hours no station reported).
+- **Error rises with lead time, for every variable** (MAE over all locations and models,
+  lead day 1 → 7): temperature 1.44 → 2.16 K, dew point 1.52 → 2.46 K, wind 1.62 → 1.89 m/s,
+  pressure 225 → 413 Pa (2.2 → 4.1 hPa). Wind has a steady bias of about −1.0 m/s at every
+  lead (models run low against airport anemometers); I have not investigated why, so I do not
+  claim a cause.
+- **Leaderboard (temperature, lead day 1, 30-day window, mean of per-location MAE):** ICON
+  1.27 K, ECMWF 1.51 K, GFS 1.55 K. One window of one month; not a general ranking.
+- **Idempotency on real data:** an MD5 over every row of both gold tables (including
+  `computed_at`) was identical before and after an incremental re-run plus a `--full` re-run.
+- **Quality gate caught real provider corruption.** 3 observation messages were quarantined
+  (`hard_range`) and 4 rows warned (`plausible_range`). The example checked by hand: IEM's
+  own row for SCEL at 2026-09-18 14:00Z has a METAR truncated mid-group (`... Q101`) and an
+  altimeter of `2.98` inHg, which became a pressure of 10,091 Pa. I confirmed against the IEM
+  API that this is what the provider serves, i.e. the bad value is upstream, not a parsing
+  bug. Trade-off accepted: quarantining the whole message also drops that hour's valid
+  temperature, dew point and wind (3 of 27,102 messages, 0.01%).
+- **Freshness** flagged every station and both live producers, correctly: no producer was
+  running in the demo.
+- **`make trace`** on real events (a forecast event and an observation event) reproduced the
+  path API request → partition/offset → bronze file → 2,016 (forecast) / 4 (observation) silver
+  rows → gold verification and accuracy rows.
+
+### Measured timings (GitHub runner, 30 days)
+
+| Step | Time |
+|---|---|
+| silver forecast drain, 1.5M rows incl. the quality gate | 5 m 45 s (≈4,400 rows/s - the gate did not measurably slow the load) |
+| `make gold`, 30 days, full (1.43M verified rows) | 7 m 21 s (≈15 s/day) |
+| `make gold` re-run with nothing changed (lookback re-reads 32 days) | 7 m 20 s |
+| `make quality` over 1.5M forecast + 1.4M verification rows | ≈23 s |
+
+**The gold build is the slow part**, and a re-run costs as much as a first run because the
+lookback deliberately re-reads recent days and only *skips the writes*. Extrapolating
+~15 s/day, a full history (~1,000 days) would take roughly 4 hours - an estimate, not
+measured. The cost is in pandas: `to_dict("records")` plus row-wise key sets in Python. If it
+mattered I would `COPY` the day's frame into a temporary table and diff it against the target
+in SQL. Incremental runs (a few days) are minutes, which is what the schedule needs.
+
 ## What is and isn't verified
 
 Local Docker was unavailable for this phase (a stale Docker Desktop lock needing a
-Windows restart), so everything that needs Postgres or Kafka ran in CI's Testcontainers job.
-Unit tests cover the pure transforms, schemas and gate. **Not measured:** how long a
-full-history `make gold` takes (~1,000 days × ~50k forecast rows per day is the design
-estimate), and pandera's cost inside the *live* consumer (only measured in isolation).
+Windows restart), so everything that needs Postgres or Kafka ran in CI's Testcontainers
+job (179 unit + 34 integration tests) and the live-demo workflow. Migration 0008 (copy and
+swap) has only ever run against an empty database or the demo's; its `downgrade` is untested.
+**Not measured:** a full-history gold build (extrapolated above), and `make partitions` /
+retention against a large table.
