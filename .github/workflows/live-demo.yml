@@ -61,6 +61,7 @@ jobs:
           fingerprint() {
             docker exec nimbus-postgres psql -U nimbus -d nimbus -At -c "select md5(string_agg(t::text, '|' order by t::text)) from gold.forecast_verification t union all select md5(string_agg(t::text, '|' order by t::text)) from gold.accuracy_daily t" | paste -sd' '
           }
+          make gold   # absorb the rows the live cycle just added; only then take the baseline
           before=$(fingerprint)
           make gold
           make gold ARGS=--full
