@@ -1,0 +1,40 @@
+# Anomaly-detector thresholds (brief section 9, ADR 0006). All in the SI units silver
+# stores: K, m/s, Pa. Initial values chosen against the measured forecast error on real
+# data (day-1 temperature MAE 1.4 K, ADR 0005): an alert should mean "well beyond
+# ordinary forecast wobble". They are starting points, not tuned - see ADR 0006.
+
+# Hours ahead of a model run's init time that the rules look at ("next 48 hours").
+horizon_hours: 48
+
+# A rule needs at least this many hours of overlapping data to say anything.
+min_overlap_hours: 24
+
+# A metric at or above threshold x critical_multiplier is severity "critical",
+# otherwise "warning".
+critical_multiplier: 2.0
+
+# Rule 1: a new run of a model changes that location's next-48h forecast versus the
+# model's previous run. Metric: mean absolute difference over the overlapping hours.
+run_change:
+  temperature_2m: 3.0
+  dew_point_2m: 3.0
+  wind_speed_10m: 3.0
+  pressure_msl: 500.0
+
+# Rule 2: the models disagree. Metric: mean over hours of (max - min across models).
+model_spread:
+  temperature_2m: 4.0
+  dew_point_2m: 4.0
+  wind_speed_10m: 4.0
+  pressure_msl: 600.0
+
+# Rule 3: a new observation misses the latest short-range forecast. Metric: absolute
+# difference between the observation and the mean of the models' forecasts for that hour.
+observation_miss:
+  temperature_2m: 6.0
+  dew_point_2m: 6.0
+  wind_speed_10m: 8.0
+  pressure_msl: 800.0
+
+# "Short range" for rule 3: only forecasts with lead <= this many hours are compared.
+observation_miss_max_lead_hours: 24

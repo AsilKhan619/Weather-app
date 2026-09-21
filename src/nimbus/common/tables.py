@@ -143,3 +143,23 @@ quality_results_table = sa.Table(
     sa.Column("detail", sa.Text),
     schema="ops",
 )
+
+alert_table = sa.Table(
+    "alert",
+    metadata,
+    sa.Column("alert_id", sa.Text, primary_key=True),
+    sa.Column("rule", sa.Text, nullable=False),
+    sa.Column("severity", sa.Text, nullable=False),
+    sa.Column("location_id", sa.Text, nullable=False),
+    sa.Column("variable", sa.Text, nullable=False),
+    sa.Column("model", sa.Text),
+    sa.Column("station", sa.Text),
+    sa.Column("event_time", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("metric", sa.Float, nullable=False),
+    sa.Column("threshold", sa.Float, nullable=False),
+    sa.Column("details", sa.JSON, nullable=False),
+    sa.Column("triggered_by_event_id", sa.Text, nullable=False),
+    sa.Column("detected_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("published_at", sa.DateTime(timezone=True)),
+    schema="gold",
+)

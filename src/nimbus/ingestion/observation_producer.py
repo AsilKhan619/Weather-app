@@ -3,6 +3,7 @@ weather.observation.raw.v1 (brief sections 5-6, Phase 2). One poll cycle
 fetches every configured station in a single batched request and produces
 one idempotent event per report actually returned."""
 
+import argparse
 import logging
 import time
 from datetime import UTC, datetime
@@ -100,6 +101,11 @@ def produce_one_poll_cycle(
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Live producer.")
+    parser.add_argument(
+        "--once", action="store_true", help="run a single poll cycle and exit (demos, schedulers)"
+    )
+    once = parser.parse_args().once
     settings = get_settings()
     configure_logging(settings.log_level)
     locations = load_locations()
@@ -113,6 +119,8 @@ def main() -> None:
                 produce_one_poll_cycle(client, producer, engine, locations)
             except Exception:
                 logger.exception("poll cycle failed")
+            if once:
+                break
             for _ in range(POLL_INTERVAL_SECONDS):
                 if shutdown.should_stop:
                     break

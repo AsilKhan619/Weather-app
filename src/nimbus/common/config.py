@@ -1,5 +1,5 @@
 """Typed loaders for the YAML files under config/: locations, models, variables, gold,
-quality and storage."""
+quality, storage and alerts."""
 
 from pathlib import Path
 
@@ -88,3 +88,18 @@ class StorageConfig(BaseModel):
 def load_storage_config(path: Path = CONFIG_DIR / "storage.yaml") -> StorageConfig:
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     return StorageConfig.model_validate(raw)
+
+
+class AlertsConfig(BaseModel):
+    horizon_hours: int
+    min_overlap_hours: int
+    critical_multiplier: float
+    run_change: dict[str, float]
+    model_spread: dict[str, float]
+    observation_miss: dict[str, float]
+    observation_miss_max_lead_hours: int
+
+
+def load_alerts_config(path: Path = CONFIG_DIR / "alerts.yaml") -> AlertsConfig:
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return AlertsConfig.model_validate(raw)

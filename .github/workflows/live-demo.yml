@@ -49,6 +49,13 @@ jobs:
           [[ "$DEMO_DAYS" =~ ^[0-9]+$ ]] || { echo "days must be a positive integer"; exit 1; }
           make demo DEMO_DAYS="$DEMO_DAYS"
 
+      - name: One live cycle, then the anomaly detector
+        run: |
+          make produce-forecasts ARGS=--once
+          make produce-observations ARGS=--once
+          make drain
+          make alerts ARGS=--drain
+
       - name: Gold idempotency (re-run changes nothing)
         run: |
           fingerprint() {
@@ -129,5 +136,10 @@ jobs:
             echo '```'
             q "select table_name, check_name, severity, left(detail, 300) as sample from ops.quality_results where context like 'silver-%' and severity = 'blocking' and check_name <> 'all_checks' order by id limit 5"
             echo '```'
+            echo "### Alerts (gold.alert)"
+            echo '```'
+            q "select rule, severity, variable, count(*) as alerts, count(published_at) as published from gold.alert group by 1, 2, 3 order by 1, 2, 3"
+            echo '```'
+            q "select rule, severity, location_id, coalesce(model, station, '') as subject, variable, round(metric::numeric, 2) as metric, threshold, event_time from gold.alert order by detected_at limit 12"
           } >> "$GITHUB_STEP_SUMMARY"
           cat "$GITHUB_STEP_SUMMARY"

@@ -12,6 +12,7 @@ IngestionMode = Literal["live", "backfill"]
 FORECAST_EVENT_TYPE = "forecast.raw"
 FORECAST_BACKFILL_EVENT_TYPE = "forecast.backfill.raw"
 OBSERVATION_EVENT_TYPE = "observation.raw"
+ALERT_EVENT_TYPE = "alert.anomaly"
 
 
 class EventEnvelope[PayloadT](BaseModel):

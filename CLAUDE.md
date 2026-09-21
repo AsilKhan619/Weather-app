@@ -24,6 +24,7 @@ make reconcile        # produced -> bronze -> silver check; non-zero exit on mis
 make gold             # verification + accuracy + leaderboard; incremental and idempotent (ARGS=--full)
 make quality          # pandera checks over changed rows + freshness -> ops.quality_results
 make partitions       # create upcoming monthly silver.forecast partitions; apply retention (ARGS=--dry-run)
+make alerts           # anomaly detector: live events -> weather.alert.v1 + gold.alert (ARGS=--drain)
 make test             # unit tests (no external services required)
 make test-integration # Testcontainers-based integration tests (needs Docker)
 make lint             # ruff check
@@ -79,3 +80,11 @@ Run `uv sync` once after cloning to install dependencies (uv manages the virtual
 - **`silver.forecast` is a partitioned table** (monthly, `valid_time`). `ctid` is only unique per partition, so never use it to pick "one row"; the primary key includes `valid_time` as Postgres requires. Rows outside the created months go to `forecast_default` - run `make partitions`.
 - **Two test files must not share a basename** across `tests/unit` and `tests/integration` (no `__init__.py`; mypy and pytest both refuse).
 - **Local Docker was down for all of Phase 3** (stale `sailor-ingest.sock`); Postgres/Kafka behaviour was verified by CI's Testcontainers job. Migration 0008 (copy-and-swap partitioning) has only run there.
+
+## Gotchas (Phase 4)
+
+- **The detector keeps no state in memory** (ADR 0006): it reads the previous run and the other models' runs from `silver.forecast` (live rows only) per event. Don't add a module-level cache of "last run" - it would be lost on restart, which is the failure the design avoids.
+- **Alert ids are deterministic** (rule + subject + event time + variable) and delivery is insert -> publish -> mark `published_at`. Keep any new rule's id stable across restarts and free of timestamps like `detected_at`.
+- **Backfilled rows never alert** (their `init_time` is derived, not a real run). Live producers have `--once`; without live data in silver the run-change rule stays silent by design.
+- **pytest shutdown in threads:** `GracefulShutdown` registers signal handlers, which only works on the main thread; tests that run a consumer loop in a thread subclass it without `signal.signal`.
+- **The Bash tool chokes on heredocs with many apostrophes** (unexpected EOF); write files with the Write tool instead.

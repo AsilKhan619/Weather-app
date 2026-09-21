@@ -4,7 +4,7 @@ need a version bump; a breaking change to an existing field's meaning or
 removal bumps `EventEnvelope.schema_version`, and consumers branch on it."""
 
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -58,3 +58,27 @@ class DlqRecord(BaseModel):
     source_partition: int
     source_offset: int
     failed_at: datetime
+
+
+AlertRule = Literal["run_change", "model_spread", "observation_miss"]
+AlertSeverity = Literal["warning", "critical"]
+
+
+class AlertPayload(BaseModel):
+    """weather.alert.v1 payload (brief section 9). `alert_id` is deterministic from
+    (rule, subject, event time, variable), so re-detecting the same anomaly - after a
+    restart or a replay - yields the same alert rather than a new one."""
+
+    alert_id: str
+    rule: AlertRule
+    severity: AlertSeverity
+    location_id: str
+    variable: str
+    model: str | None = None  # run_change: which model changed; None for cross-model rules
+    station: str | None = None  # observation_miss
+    event_time: datetime  # the model run (run_change, model_spread) or the observation time
+    metric: float  # the measured value (same unit as the variable)
+    threshold: float
+    details: dict[str, Any]
+    triggered_by_event_id: str
+    detected_at: datetime

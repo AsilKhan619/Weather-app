@@ -288,7 +288,35 @@ window. To get a dropped month back, replay it from the bronze lake (§4). A non
 `forecast_default` partition means data arrived outside the created months - run
 `make partitions`.
 
-## 11. Provider attribution
+## 11. Alerts (`make alerts`)
+
+```bash
+make alerts                    # long-running anomaly detector (Ctrl+C to stop)
+make alerts ARGS=--drain       # catch up on the live events already on the topics, then exit
+make produce-forecasts ARGS=--once      # one poll cycle of a live producer, then exit
+```
+
+The detector reads the live forecast and observation topics and writes `weather.alert.v1` and
+`gold.alert`. Rules and thresholds: `config/alerts.yaml` (ADR 0006). It holds no state in
+memory, so **there is nothing to recover after a crash: just start it again** - it re-reads
+from its last committed offset, and an alert it already published is not sent twice.
+
+```bash
+docker exec nimbus-postgres psql -U nimbus -d nimbus -c   "select detected_at, rule, severity, location_id, coalesce(model, station) as subject,
+          variable, round(metric::numeric, 2) as metric, threshold
+   from gold.alert order by detected_at desc limit 20"
+```
+
+- **No alerts at all:** expected until two consecutive live runs of a model are in silver
+  (the run-change rule) or live forecasts exist for the hour an observation is for. Backfilled
+  history never alerts. Check `select count(*) from silver.forecast where ingestion_mode = 'live'`.
+- **`published_at` is null on old rows:** the detector stopped between storing and
+  publishing. Start it; it republishes them on the next matching event, or replay the event
+  (`make alerts` after resetting its offsets, runbook section 3, group `alert-detector`).
+- **Too many alerts / too few:** thresholds are starting points. Change `config/alerts.yaml`
+  and restart; already-stored alerts are not rewritten.
+
+## 12. Provider attribution
 
 Forecast data is from [Open-Meteo](https://open-meteo.com/) (CC BY 4.0;
 non-commercial use). Historical observations are from the Iowa Environmental

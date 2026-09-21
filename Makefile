@@ -1,4 +1,4 @@
-.PHONY: up down logs demo backfill drain reconcile gold quality partitions test test-integration lint typecheck eval trace replay sync migrate init-topics produce-forecasts produce-observations
+.PHONY: up down logs demo backfill drain reconcile gold quality partitions alerts test test-integration lint typecheck eval trace replay sync migrate init-topics produce-forecasts produce-observations
 
 sync:
 	uv sync --all-extras
@@ -18,10 +18,14 @@ init-topics:
 	uv run python -m nimbus.jobs.init_topics
 
 produce-forecasts:
-	uv run python -m nimbus.ingestion.forecast_producer
+	uv run python -m nimbus.ingestion.forecast_producer $(ARGS)
 
 produce-observations:
-	uv run python -m nimbus.ingestion.observation_producer
+	uv run python -m nimbus.ingestion.observation_producer $(ARGS)
+
+# Anomaly detector: live events -> weather.alert.v1 (Ctrl+C to stop; ARGS=--drain to catch up and exit)
+alerts:
+	uv run python -m nimbus.alerts.detector $(ARGS)
 
 down:
 	docker compose down

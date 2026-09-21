@@ -87,10 +87,20 @@ Built in three slices (3a gold, 3b quality, 3c lineage + partitioning), each pus
 
 ## Phase 4 — Streaming alerts and dashboard v1
 
-- [ ] Anomaly detector → `weather.alert.v1`
-- [ ] Dashboard: Health, Forecast vs Actual, Accuracy, Lineage pages
+Split in two (the phase is large): **4a** the detector, **4b** the dashboard.
 
-*Acceptance: alerts appear within a minute of a triggering event; pages work against real data.*
+**4a — anomaly detector** ([ADR 0006](decisions/0006-phase4-anomaly-detector.md))
+- [x] Rules: run-to-run change, model spread, observation miss; thresholds in `config/alerts.yaml`
+- [x] `python -m nimbus.alerts.detector` (`make alerts`): live events -> `weather.alert.v1` and `gold.alert`; no in-memory state (silver is read on demand), deterministic alert ids, insert-publish-mark delivery
+- [x] Recorded-event replay through real Kafka + Postgres: alert published within 60 s, exactly once when replayed (integration test)
+- [x] `--once` on both live producers (demos, schedulers)
+- [x] ADR on how Kafka Streams / Flink would manage this state at scale
+- [ ] Alerts against real live data (live-demo workflow: one live cycle, then the detector)
+
+**4b — dashboard v1**
+- [ ] Streamlit app: Pipeline Health, Forecast vs Actual, Accuracy, Lineage pages (Alerts on Health)
+
+*Acceptance: alerts appear within a minute of a triggering event (demonstrated by replaying a recorded event); pages work against real data.*
 
 ## Phase 5 — LLM briefings
 

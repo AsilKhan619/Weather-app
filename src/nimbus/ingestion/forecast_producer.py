@@ -2,6 +2,7 @@
 (brief sections 5-6, Phase 1). One poll cycle finds the latest available run
 per model and produces one idempotent event per (model, location)."""
 
+import argparse
 import logging
 import time
 from datetime import UTC, datetime
@@ -92,6 +93,11 @@ def produce_one_poll_cycle(
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Live producer.")
+    parser.add_argument(
+        "--once", action="store_true", help="run a single poll cycle and exit (demos, schedulers)"
+    )
+    once = parser.parse_args().once
     settings = get_settings()
     configure_logging(settings.log_level)
     locations = load_locations()
@@ -106,6 +112,8 @@ def main() -> None:
                 produce_one_poll_cycle(client, producer, engine, locations, models)
             except Exception:
                 logger.exception("poll cycle failed")
+            if once:
+                break
             for _ in range(POLL_INTERVAL_SECONDS):
                 if shutdown.should_stop:
                     break
