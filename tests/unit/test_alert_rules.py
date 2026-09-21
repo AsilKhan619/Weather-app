@@ -343,3 +343,43 @@ def test_an_observation_from_an_unmapped_station_is_ignored() -> None:
 
 def test_other_topics_are_ignored() -> None:
     assert _detector(FakeSilver()).detect(ALERT_TOPIC, b"{}") == []
+
+
+def _high_location() -> Location:
+    return Location(
+        id="san-francisco", name="High", climate="mountain", latitude=4.7, longitude=-74.1,
+        elevation_m=2547, timezone="America/Bogota", station="KSFO",
+    )  # fmt: skip
+
+
+def test_pressure_spread_is_ignored_at_high_elevation_but_other_variables_are_not() -> None:
+    """Sea-level reductions drift apart with altitude; the first real run alerted almost only
+    at Bogota, Mexico City and Kathmandu (ADR 0006)."""
+    silver = FakeSilver()
+    for model, offset in (("ecmwf_ifs025", 0.0), ("icon_seamless", 9.0)):
+        runs = pd.concat([_run(offset), _run(offset * 200, variable="pressure_msl")])
+        silver.latest[(model, "san-francisco")] = (INIT.to_pydatetime(), runs)
+    message = _forecast_message(temp_c=6.85)  # 280 K, 101300 Pa: the pressure spread is huge
+
+    low = Detector(silver, CONFIG, [_location()], MODELS, 6).detect(FORECAST_TOPIC, message)
+    high = Detector(silver, CONFIG, [_high_location()], MODELS, 6).detect(FORECAST_TOPIC, message)
+
+    assert {a.variable for a in low if a.rule == "model_spread"} == {
+        "temperature_2m",
+        "pressure_msl",
+    }
+    assert {a.variable for a in high if a.rule == "model_spread"} == {"temperature_2m"}
+
+
+def test_pressure_observation_miss_is_ignored_at_high_elevation() -> None:
+    silver = FakeSilver()
+    silver.at[("san-francisco", "pressure_msl")] = {"gfs_seamless": 100000.0}
+    message = _observation_message(temp_c=20.0)  # slp 1013 hPa = 101300 Pa: a 1300 Pa "miss"
+
+    low = Detector(silver, CONFIG, [_location()], MODELS, 6).detect(OBSERVATION_TOPIC, message)
+    high = Detector(silver, CONFIG, [_high_location()], MODELS, 6).detect(
+        OBSERVATION_TOPIC, message
+    )
+
+    assert [a.variable for a in low] == ["pressure_msl"]
+    assert high == []

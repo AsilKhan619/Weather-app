@@ -38,3 +38,10 @@ observation_miss:
 
 # "Short range" for rule 3: only forecasts with lead <= this many hours are compared.
 observation_miss_max_lead_hours: 24
+
+# Sea-level pressure is a poor cross-source comparison at altitude: each model and each
+# station reduces station pressure to sea level its own way, and the reductions drift apart
+# with elevation (the first real run alerted almost only at Bogota, Mexico City and
+# Kathmandu). Above this elevation the model-spread and observation-miss rules ignore
+# pressure_msl; run-to-run change (a model against itself) is unaffected.
+pressure_max_elevation_m: 300

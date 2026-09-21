@@ -31,3 +31,5 @@ Building `observation_producer` and `observation_silver` right after `forecast_p
 ## Scope note
 
 This ADR covers the *live* observation pipeline only. Backfill (Previous Runs API for forecasts, IEM ASOS archive for historical METAR), cross-run reconciliation counts, and the bronze-rebuild runbook are Phase 2's remaining acceptance criteria and are tracked as follow-on work in `docs/PLAN.md` rather than bundled into this same session - the live-ingestion slice alone was already comparable in size to all of Phase 1.
+
+**Amended (Phase 4):** the altimeter fallback described above is now restricted to stations at or below 300 m. At altitude QNH is not sea-level pressure (Bogota's is ~12 hPa high) and it biased pressure verification and produced false alerts; see ADR 0006.

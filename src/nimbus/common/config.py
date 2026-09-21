@@ -98,6 +98,7 @@ class AlertsConfig(BaseModel):
     model_spread: dict[str, float]
     observation_miss: dict[str, float]
     observation_miss_max_lead_hours: int
+    pressure_max_elevation_m: float
 
 
 def load_alerts_config(path: Path = CONFIG_DIR / "alerts.yaml") -> AlertsConfig:

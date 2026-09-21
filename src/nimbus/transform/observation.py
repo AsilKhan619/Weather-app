@@ -13,10 +13,12 @@ once per *batch* (`observation_frame`), with explicit dtypes and categoricals.""
 import math
 import re
 from collections.abc import Callable, Sequence
+from functools import lru_cache
 from typing import Any
 
 import pandas as pd
 
+from nimbus.common.config import load_locations
 from nimbus.common.events import IngestionMode
 from nimbus.common.schemas import ObservationRawPayload
 
@@ -34,6 +36,14 @@ OBSERVATION_COLUMNS = [
     "ingestion_mode",
 ]
 
+# The altimeter setting (QNH) is *not* mean sea-level pressure: it reduces station pressure
+# with a standard atmosphere, and the two drift apart with elevation (Denver, 1,656 m, reports
+# both: SLP 1014.6 vs QNH 1021.1 hPa; Bogota QNH is ~12 hPa above the true value). Stations
+# that publish no SLP - most of the world outside the US - can only offer QNH, so it is used
+# as a stand-in only where the elevation is low enough for the two to agree within about
+# 1 hPa, and pressure is left missing elsewhere (ADR 0006, found by the anomaly detector).
+ALTIMETER_FALLBACK_MAX_ELEVATION_M = 300.0
+
 _CATEGORICAL_COLUMNS = ("station", "variable", "ingestion_mode")
 
 # temp/dewp/slp/altim arrive in degC/hPa (verified against the live API, ADR 0003);
@@ -46,6 +56,17 @@ _TO_SI: dict[str, Callable[[float], float]] = {
     "wind_speed_10m": lambda v: v * 0.514444,  # kt -> m/s
     "pressure_msl": lambda v: v * 100.0,  # hPa -> Pa
 }
+
+
+@lru_cache(maxsize=1)
+def _station_elevations() -> dict[str, float]:
+    return {loc.station: loc.elevation_m for loc in load_locations()}
+
+
+def _may_use_altimeter(station: str) -> bool:
+    """Only for stations known to be low; an unknown station is not trusted."""
+    elevation = _station_elevations().get(station)
+    return elevation is not None and elevation <= ALTIMETER_FALLBACK_MAX_ELEVATION_M
 
 
 def _is_corrected(raw_text: str) -> bool:
@@ -63,10 +84,10 @@ def observation_rows(
     raw_text = str(report.get("rawOb") or "")
 
     # mean sea-level pressure: prefer the true SLP reduction; fall back to the
-    # altimeter setting (already hPa in this API) when a station doesn't report
-    # SLP in its remarks - common at smaller airports.
+    # altimeter setting (already hPa in this API) only at low-elevation stations that
+    # don't report SLP in their remarks (see ALTIMETER_FALLBACK_MAX_ELEVATION_M).
     pressure = report.get("slp")
-    if pressure is None:
+    if pressure is None and _may_use_altimeter(payload.station):
         pressure = report.get("altim")
 
     raw_values = {

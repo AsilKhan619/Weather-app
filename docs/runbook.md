@@ -313,6 +313,7 @@ docker exec nimbus-postgres psql -U nimbus -d nimbus -c   "select detected_at, r
 - **`published_at` is null on old rows:** the detector stopped between storing and
   publishing. Start it; it republishes them on the next matching event, or replay the event
   (`make alerts` after resetting its offsets, runbook section 3, group `alert-detector`).
+- **Alerts on `pressure_msl` at a high-elevation location:** should not occur (spread and observation-miss ignore pressure above 300 m). If you see them, `config/alerts.yaml` `pressure_max_elevation_m` was changed.
 - **Too many alerts / too few:** thresholds are starting points. Change `config/alerts.yaml`
   and restart; already-stored alerts are not rewritten.
 
@@ -336,7 +337,13 @@ Four pages (ADR 0007). It reads Postgres, and Kafka for the health page, and nev
   Streamlit was started; start it from the repository root.
 - **Numbers look stale:** results are cached for 30 seconds (Kafka 15 s); press `r` to rerun.
 
-## 13. Provider attribution
+## 13. Rebuilding after a transform fix
+
+When a transform bug is fixed (the altimeter-fallback fix is the example), rows already in silver keep the
+old values. Rebuild silver from the lake (section 4), then `make gold ARGS=--full`. Nothing else needs to
+change: bronze holds the untouched events.
+
+## 14. Provider attribution
 
 Forecast data is from [Open-Meteo](https://open-meteo.com/) (CC BY 4.0;
 non-commercial use). Historical observations are from the Iowa Environmental

@@ -7,9 +7,9 @@ from nimbus.common.schemas import ObservationRawPayload
 from nimbus.transform.observation import explode_observation_payload
 
 
-def _payload(api_response: dict[str, object]) -> ObservationRawPayload:
+def _payload(api_response: dict[str, object], station: str = "KDEN") -> ObservationRawPayload:
     return ObservationRawPayload(
-        station="KDEN",
+        station=station,
         observed_at=datetime(2026, 9, 17, 23, 53, tzinfo=UTC),
         api_response=api_response,
     )
@@ -38,19 +38,36 @@ def test_converts_units_to_si() -> None:
     assert _value(df, "pressure_msl") == pytest.approx(101410.0)  # hPa -> Pa
 
 
-def test_falls_back_to_altimeter_when_slp_missing() -> None:
+def test_falls_back_to_altimeter_when_slp_missing_at_a_low_station() -> None:
     payload = _payload(
-        {
-            "temp": 20.0,
-            "dewp": 15.0,
-            "wspd": 5.0,
-            "altim": 1013.0,  # no "slp" key at all
-            "rawOb": "METAR KDEN 172353Z 05005KT 10SM 20/15 A2992",
-        }
+        {"temp": 20.0, "dewp": 15.0, "wspd": 5.0, "altim": 1013.0, "rawOb": "METAR KSFO"},
+        station="KSFO",  # 4 m: QNH and sea-level pressure agree
     )
     df = explode_observation_payload(payload, "live")
 
     assert _value(df, "pressure_msl") == pytest.approx(101300.0)  # altimeter fallback, hPa -> Pa
+
+
+@pytest.mark.parametrize("station", ["KDEN", "MMMX", "SKBO", "VNKT"])  # 1.3-2.5 km up
+def test_no_altimeter_fallback_at_a_high_station(station: str) -> None:
+    """QNH is not sea-level pressure at altitude (Bogota's is ~12 hPa high): better missing
+    than wrong. Found by the anomaly detector on real METARs."""
+    payload = _payload({"temp": 20.0, "altim": 1026.0, "rawOb": "METAR"}, station=station)
+    df = explode_observation_payload(payload, "live")
+
+    assert pd.isna(_value(df, "pressure_msl"))
+
+
+def test_slp_is_used_at_any_elevation() -> None:
+    payload = _payload({"temp": 20.0, "slp": 1014.6, "altim": 1021.1, "rawOb": "METAR"})
+    df = explode_observation_payload(payload, "live")
+
+    assert _value(df, "pressure_msl") == pytest.approx(101460.0)  # SLP, not the QNH
+
+
+def test_an_unknown_station_gets_no_altimeter_fallback() -> None:
+    payload = _payload({"temp": 20.0, "altim": 1013.0, "rawOb": "METAR"}, station="ZZZZ")
+    assert pd.isna(_value(explode_observation_payload(payload, "live"), "pressure_msl"))
 
 
 def test_missing_fields_become_nan_not_dropped() -> None:

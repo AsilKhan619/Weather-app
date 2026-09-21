@@ -108,12 +108,39 @@ for 300 forecast events and ~700 observations a day; at millions of events it wo
 - **What I would not do:** keep the state in a Python dict and hope. It is the simplest thing
   and it loses the previous run on every restart, which is exactly what the brief warns about.
 
+## Results on the real providers
+
+`live-demo.yml` (14 days of history, then one live cycle of both producers, `make drain`,
+`make alerts --drain`; run 35660002454) on a clean GitHub runner:
+
+- The detector raised **12 alerts, all `warning`, all published**: 10 `model_spread` (5 dew point, 5
+  pressure) and 2 `observation_miss` (both pressure). `run_change` did not fire: it needs two
+  consecutive live runs of a model in silver, and one cycle gives one.
+- **All seven pressure alerts (of the twelve) were an artifact, and they exposed a real data bug.**
+  They were all at Mexico City, Bogota and Kathmandu. I checked live METARs: at those stations
+  `slp` is absent, so the Phase 2 transform fell back to the *altimeter setting* (QNH) - which is
+  not sea-level pressure at altitude. Denver, which reports both, shows SLP 1014.6 vs QNH
+  1021.1 hPa (1,656 m); Bogota's QNH of 1026 hPa is ~12 hPa above the true value, matching the
+  1,407 Pa "miss" the detector reported. The same substitution had been quietly biasing gold's
+  pressure accuracy at every high station.
+- **Fix:** the altimeter fallback now applies only at stations at or below 300 m
+  (`ALTIMETER_FALLBACK_MAX_ELEVATION_M`, from `config/locations.yaml`; there QNH and SLP agree to
+  about 1 hPa) and pressure is left missing elsewhere - better missing than wrong. Silver rows
+  stored earlier are corrected by a replay from bronze (runbook section 4). The cost: pressure is
+  no longer verified at the high-elevation stations without SLP.
+- **Detector change:** above `pressure_max_elevation_m` (300 m) the spread and observation-miss
+  rules ignore `pressure_msl`, because each model reduces to sea level in its own way and the
+  reductions drift apart with altitude. Run-to-run change (a model against itself) is unaffected.
+- The other five spread alerts were dew point at Phoenix, Dubai and Beijing (dry climates). I did
+  not investigate them; models disagreeing about dew point in dry air is plausible but unverified.
+- Alert latency on the real path was not measured (the live run consumed the events with
+  `--drain`). The replay integration test asserts the sub-60-second criterion; CI prints its
+  measured latency to the run summary.
+
 ## What is not verified
 
-- Thresholds are untuned (above).
-- The run-change rule needs two consecutive live runs of a model in silver. The live-demo
-  workflow runs one live cycle, so it exercises the spread and observation rules against real
-  data; the run-change rule is exercised by tests with recorded runs and has not yet fired on
-  two real consecutive runs.
+- Thresholds are untuned (above); with the pressure artifact removed the observed alert rate is
+  five spread alerts per live cycle, which is a starting point, not a calibration.
+- The run-change rule has not fired on two real consecutive runs.
 - Producers are one process each and the detector is a single consumer; scaling the group out
   works (it is stateless) but was not tried.

@@ -65,6 +65,10 @@ class Detector:
         self._lookup = lookup
         self._config = config
         self._station_location = {loc.station: loc.id for loc in locations}
+        # where sea-level pressure is not comparable across sources (see config/alerts.yaml)
+        self._high_ground = {
+            loc.id for loc in locations if loc.elevation_m > config.pressure_max_elevation_m
+        }
         self._models = list(models)
         self._cadence = run_cadence_hours
 
@@ -128,6 +132,8 @@ class Detector:
                 runs[other] = latest[1]
         cycle = init.floor(f"{self._cadence}h")
         for finding in rules.model_spread(runs, init=init, config=self._config):
+            if self._ignores_pressure(location_id, finding.variable):
+                continue
             alerts.append(
                 self._alert(
                     "model_spread",
@@ -161,7 +167,7 @@ class Detector:
         alerts: list[AlertPayload] = []
         for row in rows:
             variable, value = str(row["variable"]), float(row["value"])
-            if pd.isna(value):
+            if pd.isna(value) or self._ignores_pressure(location_id, variable):
                 continue
             forecasts = self._lookup.forecasts_at(
                 location_id, variable, hour.to_pydatetime(), max_lead
@@ -180,6 +186,9 @@ class Detector:
                     )
                 )
         return alerts
+
+    def _ignores_pressure(self, location_id: str, variable: str) -> bool:
+        return variable == "pressure_msl" and location_id in self._high_ground
 
     def _alert(
         self,

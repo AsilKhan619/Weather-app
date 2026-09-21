@@ -95,13 +95,14 @@ Split in two (the phase is large): **4a** the detector, **4b** the dashboard.
 - [x] Recorded-event replay through real Kafka + Postgres: alert published within 60 s, exactly once when replayed (integration test)
 - [x] `--once` on both live producers (demos, schedulers)
 - [x] ADR on how Kafka Streams / Flink would manage this state at scale
-- [ ] Alerts against real live data (live-demo workflow: one live cycle, then the detector)
+- [x] Alerts against real live data (live-demo workflow, run 35660002454): 12 alerts published from one live cycle; the pressure ones exposed the altimeter-fallback bug, fixed (ADR 0006). `run_change` not yet seen firing on two real consecutive runs
 
 **4b — dashboard v1** ([ADR 0007](decisions/0007-phase4-dashboard.md))
 - [x] Query layer (`nimbus.dashboard.queries`, `kafka_health`) - plain functions, integration-tested against Postgres/Kafka
 - [x] Streamlit app (`make dashboard`): Pipeline Health (throughput, consumer lag, DLQ, freshness, quality, reconciliation, alerts), Forecast vs Actual, Accuracy (leaderboard, error vs lead time, best model by location), Lineage
 - [x] Every page renders headlessly (`AppTest`) on an empty and a seeded database; health survives Kafka being down
-- [ ] Pages rendered against the real 30-day data (live-demo workflow: `dashboard_smoke`)
+- [x] All four pages rendered headlessly against real data (`dashboard_smoke` in the live-demo workflow); not yet reviewed in a browser
+- [x] `docs/demo.md`: a 5-minute demo script
 
 *Acceptance: alerts appear within a minute of a triggering event (demonstrated by replaying a recorded event); pages work against real data.*
 

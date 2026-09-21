@@ -6,7 +6,7 @@ Nimbus is a streaming data platform that collects forecasts from three global we
 
 Everything is free and self-hosted: the three data sources are free, keyless APIs and every service runs locally in Docker. LLM briefings and an AI agent are planned for later phases; the platform runs without an Anthropic API key (`LLM_ENABLED=false` is the default).
 
-> **Status:** Phases 0-3 (ingestion, silver, backfill/replay, gold layer and data quality) are complete and were run against the live providers. Phase 4 (anomaly detector and dashboard v1) is implemented and passes CI; its run against real data is still being confirmed. Briefings (Phase 5), the agent (Phase 6), orchestration (Phase 7) and polish (Phase 8) are not started. Progress: [`docs/PLAN.md`](docs/PLAN.md).
+> **Status:** Phases 0-4 are implemented and were run against the live providers: ingestion, silver, backfill and replay, the gold layer and data quality, the anomaly detector and dashboard v1. Briefings (Phase 5), the agent (Phase 6), orchestration (Phase 7) and polish (Phase 8) are not started. Progress: [`docs/PLAN.md`](docs/PLAN.md). Want to show it to someone? [`docs/demo.md`](docs/demo.md) is a 5-minute script.
 
 ## What it found on real data
 
@@ -20,6 +20,7 @@ Measured on the live APIs, from a clean checkout on a GitHub runner (30 days, 25
 | Model ranking | For day-1 temperature that month: ICON 1.27 K, ECMWF 1.51 K, GFS 1.55 K. One window, not a general ranking |
 | Idempotency | A checksum of both gold tables (including compute timestamps) was identical before and after an incremental and a full re-run |
 | Quality gate | 3 of 27,102 observation messages quarantined - one traced to a METAR the provider itself truncated mid-report |
+| Alerts | One live cycle raised 12 alerts, all published. All seven pressure alerts were at high-elevation stations and exposed a real bug (altimeter setting used as sea-level pressure), now fixed - see [ADR 0006](docs/decisions/0006-phase4-anomaly-detector.md) |
 | Speed | Silver load about 4,400 rows/s with the quality gate on (1.5M rows in 5 m 45 s); gold build about 15 s per day |
 
 Details, caveats and what was *not* measured are in [ADR 0004](docs/decisions/0004-backfill-replay-reconciliation.md) and [ADR 0005](docs/decisions/0005-phase3-gold-quality-lineage.md).
@@ -143,9 +144,10 @@ Python 3.12+, full type hints, ruff and mypy in strict mode, pre-commit hooks, C
 
 - **One month of ranking is not a verdict.** The model leaderboard reflects a single 30-day window.
 - **Forecast lead is day-granular** for backfilled data (the Previous Runs API offers whole-day offsets).
+- **Pressure is not verified at high-elevation stations without SLP** (Bogota, Mexico City, Kathmandu and similar): the altimeter setting is not sea-level pressure there, so it is left missing rather than wrong.
 - **Anomaly thresholds are untuned.** They were set relative to measured forecast error, not to a measured alert rate, which needs weeks of live data.
 - **A full-history gold build is extrapolated, not measured** (about 15 s per day suggests roughly four hours for ~1,000 days). The full `make backfill` has not been run.
-- **The dashboard has been rendered headlessly, not reviewed in a browser**, and has no screenshots yet.
+- **The dashboard has been rendered headlessly - including on the real data - but not reviewed in a browser**, and has no screenshots yet.
 - **Quarantine is per message**, so one bad value drops that report's other valid variables (3 of 27,102 messages in the 30-day run).
 - Single-broker Kafka and a single Postgres: a laptop-scale design. At 1000x scale this would move to Flink or Kafka Streams, Spark, Iceberg, Schema Registry, managed Kafka and a cloud warehouse.
 
