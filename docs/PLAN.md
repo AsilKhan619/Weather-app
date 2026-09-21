@@ -97,8 +97,11 @@ Split in two (the phase is large): **4a** the detector, **4b** the dashboard.
 - [x] ADR on how Kafka Streams / Flink would manage this state at scale
 - [ ] Alerts against real live data (live-demo workflow: one live cycle, then the detector)
 
-**4b — dashboard v1**
-- [ ] Streamlit app: Pipeline Health, Forecast vs Actual, Accuracy, Lineage pages (Alerts on Health)
+**4b — dashboard v1** ([ADR 0007](decisions/0007-phase4-dashboard.md))
+- [x] Query layer (`nimbus.dashboard.queries`, `kafka_health`) - plain functions, integration-tested against Postgres/Kafka
+- [x] Streamlit app (`make dashboard`): Pipeline Health (throughput, consumer lag, DLQ, freshness, quality, reconciliation, alerts), Forecast vs Actual, Accuracy (leaderboard, error vs lead time, best model by location), Lineage
+- [x] Every page renders headlessly (`AppTest`) on an empty and a seeded database; health survives Kafka being down
+- [ ] Pages rendered against the real 30-day data (live-demo workflow: `dashboard_smoke`)
 
 *Acceptance: alerts appear within a minute of a triggering event (demonstrated by replaying a recorded event); pages work against real data.*
 

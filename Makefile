@@ -1,4 +1,4 @@
-.PHONY: up down logs demo backfill drain reconcile gold quality partitions alerts test test-integration lint typecheck eval trace replay sync migrate init-topics produce-forecasts produce-observations
+.PHONY: up down logs demo backfill drain reconcile gold quality partitions alerts dashboard test test-integration lint typecheck eval trace replay sync migrate init-topics produce-forecasts produce-observations
 
 sync:
 	uv sync --all-extras
@@ -26,6 +26,10 @@ produce-observations:
 # Anomaly detector: live events -> weather.alert.v1 (Ctrl+C to stop; ARGS=--drain to catch up and exit)
 alerts:
 	uv run python -m nimbus.alerts.detector $(ARGS)
+
+# Streamlit dashboard on http://localhost:8501 (needs `uv sync --extra dashboard`)
+dashboard:
+	uv run streamlit run dashboard/app.py
 
 down:
 	docker compose down

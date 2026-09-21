@@ -4,10 +4,12 @@ produced, exactly once even when the event is replayed; and the insert-then-publ
 delivery recovers from a crash between the two steps without losing or duplicating."""
 
 import json
+import os
 import threading
 import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -157,6 +159,10 @@ def test_a_replayed_forecast_event_raises_one_alert_within_a_minute(
         time.sleep(0.25)
     assert latency is not None, "no alert within a minute"
     print(f"\nalert latency (produce -> published): {latency:.2f}s")
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:  # make the measurement visible on the CI run page
+        with Path(summary).open("a", encoding="utf-8") as handle:
+            handle.write(f"- alert latency, recorded event to published alert: {latency:.2f} s\n")
 
     # The same event, replayed: the detector re-detects it but must not publish it again.
     produce_json(producer, FORECAST_TOPIC, LOCATION.id, trigger)

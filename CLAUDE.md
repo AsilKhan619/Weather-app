@@ -25,6 +25,7 @@ make gold             # verification + accuracy + leaderboard; incremental and i
 make quality          # pandera checks over changed rows + freshness -> ops.quality_results
 make partitions       # create upcoming monthly silver.forecast partitions; apply retention (ARGS=--dry-run)
 make alerts           # anomaly detector: live events -> weather.alert.v1 + gold.alert (ARGS=--drain)
+make dashboard        # Streamlit dashboard on :8501 (uv sync --extra dashboard)
 make test             # unit tests (no external services required)
 make test-integration # Testcontainers-based integration tests (needs Docker)
 make lint             # ruff check
@@ -88,3 +89,5 @@ Run `uv sync` once after cloning to install dependencies (uv manages the virtual
 - **Backfilled rows never alert** (their `init_time` is derived, not a real run). Live producers have `--once`; without live data in silver the run-change rule stays silent by design.
 - **pytest shutdown in threads:** `GracefulShutdown` registers signal handlers, which only works on the main thread; tests that run a consumer loop in a thread subclass it without `signal.signal`.
 - **The Bash tool chokes on heredocs with many apostrophes** (unexpected EOF); write files with the Write tool instead.
+- **Dashboard pages are thin; logic lives in `src/nimbus/dashboard/queries.py`** and is tested against Postgres. Pages in `dashboard/views/` are Streamlit scripts (not importable modules) run via `st.navigation`; test them with `AppTest` (`switch_page`), and note the default selectbox choice may have no data (alphabetical first location).
+- **Local Postgres without Docker:** `NIMBUS_TEST_POSTGRES=host:port` makes the Postgres-only integration tests (gold, partitions, alerts store, dashboard) use an existing disposable server instead of Testcontainers; an embedded one worked via `uv run --no-project --with pgserver` (scratch, not a dependency). Kafka tests still need Docker. The partition-retention test drops partitions in that database, so re-create it (`alembic downgrade 0007 && upgrade head`) between runs.

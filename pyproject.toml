@@ -83,7 +83,7 @@ known-first-party = ["nimbus"]
 python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
-files = ["src", "tests"]
+files = ["src", "tests", "dashboard"]
 
 [[tool.mypy.overrides]]
 module = ["confluent_kafka.*"]

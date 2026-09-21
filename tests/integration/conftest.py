@@ -70,7 +70,35 @@ def module_stack() -> Iterator[Stack]:
 def pg_settings() -> Iterator[Settings]:
     """Postgres only (migrated) - for tests of SQL-level behaviour that never touch
     Kafka, which is most of the startup cost. Tests share it and clean up after
-    themselves."""
+    themselves.
+
+    Without Docker, set NIMBUS_TEST_POSTGRES=host:port to use an already-running,
+    disposable Postgres (user `postgres`, database `postgres`, no password) instead of a
+    container; it is migrated to head and the tests truncate what they touch."""
+    external = os.environ.get("NIMBUS_TEST_POSTGRES")
+    if external:
+        host, port = external.split(":")
+        settings = Settings(
+            _env_file=None,
+            postgres_host=host,
+            postgres_port=int(port),
+            postgres_db="postgres",
+            postgres_user="postgres",
+            postgres_password="x",
+        )
+        env = {
+            **os.environ,
+            "POSTGRES_HOST": host,
+            "POSTGRES_PORT": port,
+            "POSTGRES_DB": "postgres",
+            "POSTGRES_USER": "postgres",
+            "POSTGRES_PASSWORD": "x",
+        }
+        subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", "head"], cwd=REPO_ROOT, env=env, check=True
+        )
+        yield settings
+        return
     with PostgresContainer("postgres:18.6-alpine") as pg:
         pg_env = {
             **os.environ,

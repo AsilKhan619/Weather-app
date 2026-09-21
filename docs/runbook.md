@@ -316,7 +316,27 @@ docker exec nimbus-postgres psql -U nimbus -d nimbus -c   "select detected_at, r
 - **Too many alerts / too few:** thresholds are starting points. Change `config/alerts.yaml`
   and restart; already-stored alerts are not rewritten.
 
-## 12. Provider attribution
+## 12. The dashboard (`make dashboard`)
+
+```bash
+uv sync --extra dashboard     # once
+make dashboard                # http://localhost:8501
+uv run python -m nimbus.jobs.dashboard_smoke   # render every page headlessly and print what each shows
+```
+
+Four pages (ADR 0007). It reads Postgres, and Kafka for the health page, and never writes.
+
+- **Every page says "run `make gold`" / "nothing verified yet":** gold is empty. Load data
+  (`make demo`), then `make gold`.
+- **Pipeline Health says "Kafka is not reachable":** the broker is down or `KAFKA_BOOTSTRAP_SERVERS`
+  is wrong; everything else still works.
+- **Freshness shows every station stale:** the live producers are not running. Start
+  `make produce-forecasts` / `make produce-observations`.
+- **Lineage says the bronze lake does not exist:** it reads `data/lake/bronze` relative to where
+  Streamlit was started; start it from the repository root.
+- **Numbers look stale:** results are cached for 30 seconds (Kafka 15 s); press `r` to rerun.
+
+## 13. Provider attribution
 
 Forecast data is from [Open-Meteo](https://open-meteo.com/) (CC BY 4.0;
 non-commercial use). Historical observations are from the Iowa Environmental

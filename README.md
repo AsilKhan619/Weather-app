@@ -70,6 +70,7 @@ make quality                # pandera checks + freshness -> ops.quality_results
 make trace SAMPLE=forecast  # follow one event bronze -> silver -> gold (or EVENT_ID=...)
 make partitions             # create upcoming monthly silver.forecast partitions
 make alerts                 # anomaly detector: live events -> weather.alert.v1 (Ctrl+C to stop)
+make dashboard              # Streamlit dashboard: health, forecast vs actual, accuracy, lineage
 make produce-forecasts      # live forecast producer (Ctrl+C to stop)
 make produce-observations   # live METAR producer (Ctrl+C to stop)
 make test                   # unit tests
