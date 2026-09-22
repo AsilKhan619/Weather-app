@@ -238,6 +238,37 @@ def test_an_alert_is_published_once_and_marked(engine: Engine) -> None:
         assert conn.execute(text("SELECT published_at FROM gold.alert")).scalar_one() is not None
 
 
+def test_a_later_more_complete_evaluation_upgrades_the_stored_alert(engine: Engine) -> None:
+    """`model_spread`'s id names only (location, cycle, variable) - not which models were
+    compared - so the same id can legitimately be re-evaluated as more models' runs land.
+    Found by review: the original ON CONFLICT DO NOTHING froze the *first*, possibly
+    incomplete, evaluation forever. The stored row must catch up; the already-sent Kafka
+    message and detected_at must not be touched or duplicated."""
+    weak = _alert("spread-1")
+    strong = _alert("spread-1").model_copy(
+        update={"severity": "critical", "metric": 9.2, "details": {"models": ["a", "b", "c"]}}
+    )
+
+    sent = publish_batch(engine, _producer(), [weak])
+    insert_alerts(engine, [strong])  # a later batch re-evaluates the same anomaly
+
+    assert [a.alert_id for a in sent] == ["spread-1"]  # only ever published once
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT severity, metric, details, detected_at, published_at "
+                "FROM gold.alert WHERE alert_id = 'spread-1'"
+            )
+        ).one()
+    assert (row.severity, row.metric) == ("critical", pytest.approx(9.2))
+    assert row.details["models"] == ["a", "b", "c"]
+    assert row.detected_at == INIT  # "first seen" is preserved
+    assert row.published_at is not None  # still marked published; not sent again
+
+    again = publish_batch(engine, _producer(), [strong])  # re-detecting the same state
+    assert again == []  # ...never republishes
+
+
 def test_a_crash_after_the_insert_is_retried_and_not_lost(engine: Engine) -> None:
     insert_alerts(engine, [_alert()])  # the process died right here: stored, never published
 

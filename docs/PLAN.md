@@ -92,7 +92,7 @@ Split in two (the phase is large): **4a** the detector, **4b** the dashboard.
 **4a — anomaly detector** ([ADR 0006](decisions/0006-phase4-anomaly-detector.md))
 - [x] Rules: run-to-run change, model spread, observation miss; thresholds in `config/alerts.yaml`
 - [x] `python -m nimbus.alerts.detector` (`make alerts`): live events -> `weather.alert.v1` and `gold.alert`; no in-memory state (silver is read on demand), deterministic alert ids, insert-publish-mark delivery
-- [x] Recorded-event replay through real Kafka + Postgres: alert published within 60 s, exactly once when replayed (integration test)
+- [x] Recorded-event replay through real Kafka + Postgres: alert published within 60 s; replaying the same event does not send a second message (integration test). Delivery overall is at-least-once, not exactly-once — a crash between a confirmed Kafka delivery and marking the row published can duplicate one message (ADR 0006); worded precisely here after review flagged this line as overclaiming
 - [x] `--once` on both live producers (demos, schedulers)
 - [x] ADR on how Kafka Streams / Flink would manage this state at scale
 - [x] Alerts against real live data (live-demo workflow, run 35660002454): 12 alerts published from one live cycle; the pressure ones exposed the altimeter-fallback bug, fixed (ADR 0006). `run_change` not yet seen firing on two real consecutive runs

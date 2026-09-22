@@ -123,19 +123,52 @@ for 300 forecast events and ~700 observations a day; at millions of events it wo
   1021.1 hPa (1,656 m); Bogota's QNH of 1026 hPa is ~12 hPa above the true value, matching the
   1,407 Pa "miss" the detector reported. The same substitution had been quietly biasing gold's
   pressure accuracy at every high station.
-- **Fix:** the altimeter fallback now applies only at stations at or below 300 m
-  (`ALTIMETER_FALLBACK_MAX_ELEVATION_M`, from `config/locations.yaml`; there QNH and SLP agree to
-  about 1 hPa) and pressure is left missing elsewhere - better missing than wrong. Silver rows
-  stored earlier are corrected by a replay from bronze (runbook section 4). The cost: pressure is
-  no longer verified at the high-elevation stations without SLP.
-- **Detector change:** above `pressure_max_elevation_m` (300 m) the spread and observation-miss
+- **Fix:** the altimeter fallback now applies only at stations at or below `pressure_max_elevation_m`
+  (300 m; there QNH and SLP agree to about 1 hPa) and pressure is left missing elsewhere - better
+  missing than wrong. Silver rows stored earlier are corrected by a replay from bronze (runbook
+  section 4). The cost: pressure is no longer verified at the high-elevation stations without SLP.
+- **Detector change:** above the same `pressure_max_elevation_m` the spread and observation-miss
   rules ignore `pressure_msl`, because each model reduces to sea level in its own way and the
   reductions drift apart with altitude. Run-to-run change (a model against itself) is unaffected.
+  **One config value drives both** (`config/alerts.yaml`), not two constants that happened to
+  agree - review of this very fix flagged that a Python-side duplicate would silently drift from
+  the YAML and reopen the bug it fixes, so the transform now reads the same value at runtime
+  instead of hard-coding its own copy.
 - The other five spread alerts were dew point at Phoenix, Dubai and Beijing (dry climates). I did
   not investigate them; models disagreeing about dew point in dry air is plausible but unverified.
 - Alert latency on the real path was not measured (the live run consumed the events with
   `--drain`). The replay integration test asserts the sub-60-second criterion; CI prints its
   measured latency to the run summary.
+
+## Independent review: a stale-severity bug, and a duplicated constant
+
+An independent review of the Phase 4 diff found two issues, both fixed:
+
+- **`model_spread`'s stored verdict could freeze at an incomplete comparison, permanently.**
+  `insert_alerts` originally used `ON CONFLICT (alert_id) DO NOTHING`, and the id only names
+  (location, 6-hour cycle, variable) - not which models were compared. If ECMWF's run lands
+  before GFS's, the spread is first evaluated over 2 models (say metric 4.1, just past the
+  `warning` threshold); when GFS's run lands seconds later the *true* 3-model spread might be
+  9.2 - past `critical_multiplier x threshold` - but the stored row, and the message already on
+  `weather.alert.v1`, would have stayed `warning` at 4.1 forever, because the second
+  evaluation's insert was silently dropped. Fixed: `insert_alerts` now `ON CONFLICT DO UPDATE`s
+  severity/metric/threshold/details (guarded by `IS DISTINCT FROM`, so an unchanged
+  re-evaluation still writes nothing) whenever the same id is re-detected - the *stored* record
+  catches up to the best evaluation seen so far. `detected_at` and `published_at` are
+  deliberately left alone: `detected_at` keeps meaning "first seen", and a Kafka message already
+  delivered cannot be unsent or corrected - only what a later reader of `gold.alert` (the
+  dashboard, `make trace`, a future briefing) sees is kept accurate. The test added
+  (`test_a_later_more_complete_evaluation_upgrades_the_stored_alert`) asserts a second, worse
+  evaluation of the same id changes the stored severity and metric without creating a second row
+  or re-publishing.
+- **The 300 m pressure threshold was two independently-typed constants that happened to agree.**
+  `config/alerts.yaml`'s `pressure_max_elevation_m` (read by the detector) and a hardcoded
+  `ALTIMETER_FALLBACK_MAX_ELEVATION_M = 300.0` in `transform/observation.py` were both 300, but
+  nothing enforced that: retuning one without the other would silently reopen the exact QNH-at-
+  altitude bug this ADR just fixed. Fixed: the transform now reads `pressure_max_elevation_m`
+  from `config/alerts.yaml` at runtime (cached) instead of hard-coding its own copy - one number
+  decides both "can this station's altimeter stand in for sea-level pressure" and "can the
+  detector compare pressure here at all", because they are the same physical question.
 
 ## What is not verified
 
