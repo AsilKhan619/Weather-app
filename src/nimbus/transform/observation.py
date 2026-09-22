@@ -18,7 +18,7 @@ from typing import Any
 
 import pandas as pd
 
-from nimbus.common.config import load_locations
+from nimbus.common.config import load_alerts_config, load_locations
 from nimbus.common.events import IngestionMode
 from nimbus.common.schemas import ObservationRawPayload
 
@@ -35,14 +35,6 @@ OBSERVATION_COLUMNS = [
     "is_corrected",
     "ingestion_mode",
 ]
-
-# The altimeter setting (QNH) is *not* mean sea-level pressure: it reduces station pressure
-# with a standard atmosphere, and the two drift apart with elevation (Denver, 1,656 m, reports
-# both: SLP 1014.6 vs QNH 1021.1 hPa; Bogota QNH is ~12 hPa above the true value). Stations
-# that publish no SLP - most of the world outside the US - can only offer QNH, so it is used
-# as a stand-in only where the elevation is low enough for the two to agree within about
-# 1 hPa, and pressure is left missing elsewhere (ADR 0006, found by the anomaly detector).
-ALTIMETER_FALLBACK_MAX_ELEVATION_M = 300.0
 
 _CATEGORICAL_COLUMNS = ("station", "variable", "ingestion_mode")
 
@@ -63,10 +55,26 @@ def _station_elevations() -> dict[str, float]:
     return {loc.station: loc.elevation_m for loc in load_locations()}
 
 
+@lru_cache(maxsize=1)
+def _altimeter_fallback_max_elevation_m() -> float:
+    """The altimeter setting (QNH) is *not* mean sea-level pressure: it reduces station
+    pressure with a standard atmosphere, and the two drift apart with elevation (Denver,
+    1,656 m, reports both: SLP 1014.6 vs QNH 1021.1 hPa; Bogota QNH is ~12 hPa above the
+    true value). Stations that publish no SLP - most of the world outside the US - can only
+    offer QNH, so it is used as a stand-in only where the elevation is low enough for the
+    two to agree within about 1 hPa (ADR 0006, found by the anomaly detector).
+
+    Read from `config/alerts.yaml`'s `pressure_max_elevation_m`, the *same* value the
+    detector uses to decide where it can compare pressure across models/observations at
+    all - one number, not two independently-tuned ones that could drift apart and quietly
+    reintroduce this bug (found by review of the fix itself)."""
+    return load_alerts_config().pressure_max_elevation_m
+
+
 def _may_use_altimeter(station: str) -> bool:
     """Only for stations known to be low; an unknown station is not trusted."""
     elevation = _station_elevations().get(station)
-    return elevation is not None and elevation <= ALTIMETER_FALLBACK_MAX_ELEVATION_M
+    return elevation is not None and elevation <= _altimeter_fallback_max_elevation_m()
 
 
 def _is_corrected(raw_text: str) -> bool:
@@ -85,7 +93,7 @@ def observation_rows(
 
     # mean sea-level pressure: prefer the true SLP reduction; fall back to the
     # altimeter setting (already hPa in this API) only at low-elevation stations that
-    # don't report SLP in their remarks (see ALTIMETER_FALLBACK_MAX_ELEVATION_M).
+    # don't report SLP in their remarks (see _altimeter_fallback_max_elevation_m).
     pressure = report.get("slp")
     if pressure is None and _may_use_altimeter(payload.station):
         pressure = report.get("altim")

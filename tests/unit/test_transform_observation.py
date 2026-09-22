@@ -70,6 +70,39 @@ def test_an_unknown_station_gets_no_altimeter_fallback() -> None:
     assert pd.isna(_value(explode_observation_payload(payload, "live"), "pressure_msl"))
 
 
+def test_altimeter_fallback_elevation_is_read_from_config_not_hardcoded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression, found by review of the ADR 0006 fix: the fallback threshold must come from
+    config/alerts.yaml's pressure_max_elevation_m at runtime (the same value the detector uses),
+    not a Python constant that could silently drift from it and reopen the QNH-at-altitude bug
+    this threshold exists to prevent."""
+    from nimbus.common.config import AlertsConfig
+    from nimbus.transform import observation as obs
+
+    obs._altimeter_fallback_max_elevation_m.cache_clear()
+    monkeypatch.setattr(
+        obs,
+        "load_alerts_config",
+        lambda: AlertsConfig(
+            horizon_hours=48,
+            min_overlap_hours=24,
+            critical_multiplier=2.0,
+            run_change={},
+            model_spread={},
+            observation_miss={},
+            observation_miss_max_lead_hours=24,
+            pressure_max_elevation_m=2000,  # raised: Denver (1,655 m) now qualifies
+        ),
+    )
+    try:
+        payload = _payload({"temp": 20.0, "altim": 1021.1, "rawOb": "METAR"}, station="KDEN")
+        df = explode_observation_payload(payload, "live")
+        assert _value(df, "pressure_msl") == pytest.approx(102110.0)  # took the fallback now
+    finally:
+        obs._altimeter_fallback_max_elevation_m.cache_clear()  # restore real config for later tests
+
+
 def test_missing_fields_become_nan_not_dropped() -> None:
     payload = _payload({"temp": 20.0, "rawOb": "METAR KDEN 172353Z 05005KT 10SM 20/M NCD"})
     df = explode_observation_payload(payload, "live")

@@ -44,4 +44,10 @@ observation_miss_max_lead_hours: 24
 # with elevation (the first real run alerted almost only at Bogota, Mexico City and
 # Kathmandu). Above this elevation the model-spread and observation-miss rules ignore
 # pressure_msl; run-to-run change (a model against itself) is unaffected.
+#
+# This is also the ONE source of truth for how high a station can be and still have its
+# altimeter setting (QNH) stand in for missing sea-level pressure in silver
+# (nimbus.transform.observation._altimeter_fallback_max_elevation_m reads this same value) -
+# deliberately one number, not two independently-tuned ones that could drift apart and
+# quietly reintroduce the QNH-at-altitude bug this threshold was created to fix (ADR 0006).
 pressure_max_elevation_m: 300

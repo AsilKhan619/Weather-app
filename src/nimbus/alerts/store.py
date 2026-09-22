@@ -122,7 +122,20 @@ class PostgresForecasts:
 
 
 def insert_alerts(engine: Engine, alerts: list[AlertPayload]) -> None:
-    """Record alerts; one that already exists (same deterministic id) is left alone."""
+    """Record alerts, keyed on their deterministic id.
+
+    A brand-new id is inserted. One that already exists is *refreshed* (severity,
+    metric, threshold, details, triggering event) rather than left alone - found by
+    review: `model_spread`'s id only names (location, cycle, variable), not which
+    models were compared, so the first model of a cycle to land evaluates the spread
+    against whichever other runs are in silver yet, which can understate it (2 models
+    seen where 3 will eventually exist). Without a refresh that first, incomplete
+    verdict would be permanent. `detected_at` and `published_at` are never touched by
+    the refresh: `detected_at` stays the *first* time the anomaly was seen, and a
+    message already delivered to weather.alert.v1 cannot be unsent - only the stored
+    record (what the dashboard and any later reader see) catches up to the best
+    known evaluation. `only_if_changed`-style: a re-evaluation that agrees with what
+    is stored writes nothing."""
     if not alerts:
         return
     with engine.begin() as conn:
@@ -134,7 +147,14 @@ def insert_alerts(engine: Engine, alerts: list[AlertPayload]) -> None:
                     "triggered_by_event_id, detected_at) "
                     "VALUES (:alert_id, :rule, :severity, :location_id, :variable, :model, "
                     ":station, :event_time, :metric, :threshold, CAST(:details AS jsonb), "
-                    ":triggered_by_event_id, :detected_at) ON CONFLICT (alert_id) DO NOTHING"
+                    ":triggered_by_event_id, :detected_at) "
+                    "ON CONFLICT (alert_id) DO UPDATE SET "
+                    "severity = excluded.severity, metric = excluded.metric, "
+                    "threshold = excluded.threshold, details = excluded.details, "
+                    "triggered_by_event_id = excluded.triggered_by_event_id "
+                    "WHERE gold.alert.severity IS DISTINCT FROM excluded.severity "
+                    "OR gold.alert.metric IS DISTINCT FROM excluded.metric "
+                    "OR gold.alert.details IS DISTINCT FROM excluded.details"
                 ),
                 {
                     **alert.model_dump(exclude={"details"}),

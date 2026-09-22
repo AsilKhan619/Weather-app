@@ -6,7 +6,11 @@ compared against silver (`ForecastLookup`), and an alert id is a hash of what th
 about, so re-detecting after a restart or a replay yields the same alert. Delivery is
 insert-then-publish: the alert row is written first and marked published only once Kafka
 confirms delivery, so a crash between the two republishes on restart instead of losing
-the alert - and an alert already published is never sent twice."""
+the alert - and an alert already published is never sent twice. A later re-evaluation of
+the same id (e.g. `model_spread` once a third model's run lands) refreshes the stored
+severity/metric/details even after publishing - the Kafka message already sent cannot be
+corrected, but the stored record does not stay frozen at an incomplete first look
+(`alerts/store.py::insert_alerts`)."""
 
 import logging
 from collections.abc import Sequence
