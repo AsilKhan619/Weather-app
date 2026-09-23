@@ -26,6 +26,8 @@ make quality          # pandera checks over changed rows + freshness -> ops.qual
 make partitions       # create upcoming monthly silver.forecast partitions; apply retention (ARGS=--dry-run)
 make alerts           # anomaly detector: live events -> weather.alert.v1 + gold.alert (ARGS=--drain)
 make dashboard        # Streamlit dashboard on :8501 (uv sync --extra dashboard)
+make briefings        # daily LLM briefings; off unless LLM_ENABLED=true (ARGS=--dry-run prints fact sheets)
+make briefing-consumer # briefings on weather.alert.v1 (ARGS=--drain)
 make test             # unit tests (no external services required)
 make test-integration # Testcontainers-based integration tests (needs Docker)
 make lint             # ruff check
@@ -91,3 +93,11 @@ Run `uv sync` once after cloning to install dependencies (uv manages the virtual
 - **The Bash tool chokes on heredocs with many apostrophes** (unexpected EOF); write files with the Write tool instead.
 - **Dashboard pages are thin; logic lives in `src/nimbus/dashboard/queries.py`** and is tested against Postgres. Pages in `dashboard/views/` are Streamlit scripts (not importable modules) run via `st.navigation`; test them with `AppTest` (`switch_page`), and note the default selectbox choice may have no data (alphabetical first location).
 - **Local Postgres without Docker:** `NIMBUS_TEST_POSTGRES=host:port` makes the Postgres-only integration tests (gold, partitions, alerts store, dashboard) use an existing disposable server instead of Testcontainers; an embedded one worked via `uv run --no-project --with pgserver` (scratch, not a dependency). Kafka tests still need Docker. The partition-retention test drops partitions in that database, so re-create it (`alembic downgrade 0007 && upgrade head`) between runs.
+
+## Gotchas (Phase 5)
+
+- **The LLM may only restate the fact sheet.** Anything that should be decided (confidence, most reliable model) is computed in `nimbus.llm.facts` and enforced by `nimbus.llm.grounding`; don't move a decision into the prompt. A new fact-sheet field with numbers is automatically "allowed" for grounding.
+- **anthropic 1.x (1.6.0) runs on `httpx2`,** not `httpx` - it does not touch the `httpx<1.0` pin. Its `messages.parse()` raises on an invalid reply and loses the token usage, which is why the client calls `messages.create()` with `output_config` and validates itself. `transform_schema` moves `maxLength`/`maxItems` into descriptions (not enforced by decoding), so length violations are real invalid outputs.
+- **Prompts are versioned files; never edit a published one.** Add `briefing_vN.md` and bump `prompt_version` in `config/llm.yaml` - the version is part of the cache key.
+- **No real API call has been made** (no key). Tests use `FakeBriefingClient` and stubbed `messages.create`; the unit tests import `anthropic`, so CI installs `--extra llm`. Model ids come from settings (`claude-haiku-4-5` alias, no date suffix).
+- **Haiku 4.5's minimum cacheable prompt prefix is 4,096 tokens;** the briefing system prompt is ~450, so API prompt caching is deliberately not used - the fact-sheet-hash cache is what saves money.

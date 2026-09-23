@@ -108,12 +108,22 @@ Split in two (the phase is large): **4a** the detector, **4b** the dashboard.
 
 ## Phase 5 — LLM briefings
 
-- [ ] Fact-sheet builder, briefing generator, grounding check
-- [ ] Caching by fact-sheet hash, `ops.llm_calls` logging
-- [ ] Dashboard: Briefings, LLM Usage pages
-- [ ] User adds Anthropic API key + billing cap (blocked until then)
+Design: [ADR 0008](decisions/0008-phase5-grounded-briefings.md). Built and tested with the deterministic fake client; **no real API call yet** (no key).
 
-*Acceptance: briefings pass schema validation; grounding check rejects an invented number; cache hits skip the API; platform runs with `LLM_ENABLED=false`.*
+- [x] Fact-sheet builder (code decides confidence from model agreement and the most accurate model; display units, 1 decimal; latest forecast issued at or before `as_of`)
+- [x] Briefing generator: Claude structured output (JSON schema from `BriefingOutput`, validated locally so invalid replies are still costed), one retry on invalid output, typed SDK errors -> skipped and logged, pipeline carries on
+- [x] Grounding check: every number in, or rounded from, the fact sheet; confidence and model match what code decided; failures stored flagged, never published
+- [x] Caching by hash(fact sheet, prompt version, model); `ops.llm_calls` logs every call, cache hit and skip with tokens, latency and estimated cost (prices in `config/llm.yaml`)
+- [x] `gold.briefing` + `weather.briefing.v1` (store, publish, mark); `make briefings` (daily, `--dry-run`) and `make briefing-consumer` (on alerts)
+- [x] Versioned prompt file (`src/nimbus/llm/prompts/briefing_v1.md`)
+- [x] Dashboard: Briefings, LLM Usage pages
+- [ ] User adds Anthropic API key + billing cap, then one real run to confirm the request shape, grounding pass rate, latency and cost (blocked until then)
+
+*Acceptance:*
+- *briefings pass schema validation* — **MET** (Pydantic-validated structured output; invalid replies retried once, tested).
+- *a test proves the grounding check rejects an invented number* — **MET** (`test_the_grounding_check_rejects_an_invented_number`, and an integration test that it is stored flagged and never published).
+- *cache hits skip the API* — **MET** (`test_a_cache_hit_skips_the_api`: the second identical request never reaches the client).
+- *the platform runs with `LLM_ENABLED=false`* — **MET** (fact sheets are built, the skip is logged, nothing is called; default configuration; the live-demo workflow exercises it on real data).
 
 ## Phase 6 — AI agent
 

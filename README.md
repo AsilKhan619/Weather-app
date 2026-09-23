@@ -4,9 +4,9 @@
 
 Nimbus is a streaming data platform that collects forecasts from three global weather models and real observations from airport weather stations, scores every forecast against what actually happened, and ranks the models by location, variable and lead time. It is built on Kafka, Python, pandas and Postgres, with data-quality gates, lineage tracing, streaming anomaly alerts and a Streamlit dashboard.
 
-Everything is free and self-hosted: the three data sources are free, keyless APIs and every service runs locally in Docker. LLM briefings and an AI agent are planned for later phases; the platform runs without an Anthropic API key (`LLM_ENABLED=false` is the default).
+Everything is free and self-hosted: the three data sources are free, keyless APIs and every service runs locally in Docker. Grounded LLM briefings are built and tested; an AI agent is planned. The platform runs without an Anthropic API key (`LLM_ENABLED=false` is the default) - the only component that can ever cost money is the optional Claude API, and it stays off until you add a key.
 
-> **Status:** Phases 0-4 are implemented and were run against the live providers: ingestion, silver, backfill and replay, the gold layer and data quality, the anomaly detector and dashboard v1. Briefings (Phase 5), the agent (Phase 6), orchestration (Phase 7) and polish (Phase 8) are not started. Progress: [`docs/PLAN.md`](docs/PLAN.md). Want to show it to someone? [`docs/demo.md`](docs/demo.md) is a 5-minute script.
+> **Status:** Phases 0-4 are implemented and were run against the live providers: ingestion, silver, backfill and replay, the gold layer and data quality, the anomaly detector and dashboard v1. Phase 5 (grounded LLM briefings) is implemented and tested with a deterministic fake client; **no call has been made to the real Claude API yet** (no key). The agent (Phase 6), orchestration (Phase 7) and polish (Phase 8) are not started. Progress: [`docs/PLAN.md`](docs/PLAN.md). Want to show it to someone? [`docs/demo.md`](docs/demo.md) is a 5-minute script.
 
 ## What it found on real data
 
@@ -100,6 +100,8 @@ make trace SAMPLE=forecast   # follow one event bronze -> silver -> gold (or EVE
 make alerts                  # anomaly detector (live events -> weather.alert.v1)
 make partitions              # create upcoming monthly partitions; apply retention
 make dashboard               # Streamlit dashboard
+make briefings               # daily LLM briefings (off unless LLM_ENABLED=true; ARGS=--dry-run prints fact sheets)
+make briefing-consumer       # a briefing when an alert arrives
 make replay ARGS=...         # rebuild silver from the lake, or reset a consumer group
 make produce-forecasts       # live producers (ARGS=--once for a single cycle)
 make produce-observations
@@ -123,7 +125,9 @@ Operational procedures (crashed consumer, rebuilding from bronze, the DLQ, rate 
 
 **Alerts.** The anomaly detector consumes live events and raises alerts when a new model run moves a location's next-48-hour forecast, when models disagree, or when an observation misses the forecast. It keeps no state in memory (comparison data is read from silver), alert ids are deterministic, and delivery is insert-then-publish, so a restart or replay neither loses nor duplicates an alert. See [ADR 0006](docs/decisions/0006-phase4-anomaly-detector.md), including how Kafka Streams or Flink would hold this state at scale.
 
-**Dashboard.** Four pages: Pipeline Health (throughput, consumer lag, dead letters, freshness, quality, reconciliation, alerts), Forecast vs Actual, Accuracy (leaderboard, error vs lead time, best model by location) and Lineage. Pages are thin; the logic lives in a tested query layer ([ADR 0007](docs/decisions/0007-phase4-dashboard.md)).
+**Briefings.** Code builds a fact sheet per location - each model's next-48-hour outlook, how much the models disagree, their recent accuracy there, active alerts, and a confidence level decided from model agreement. Claude (Haiku 4.5) writes a short briefing from that sheet alone as validated structured output, retried once if invalid. An automatic grounding check then requires every number to appear in, or round from, the fact sheet; a briefing that fails is stored flagged and never published. Identical fact sheets never pay twice (cached by hash), and every call is logged with tokens, latency and estimated cost ([ADR 0008](docs/decisions/0008-phase5-grounded-briefings.md)).
+
+**Dashboard.** Six pages: Pipeline Health (throughput, consumer lag, dead letters, freshness, quality, reconciliation, alerts), Forecast vs Actual, Accuracy (leaderboard, error vs lead time, best model by location), Lineage, Briefings and LLM Usage. Pages are thin; the logic lives in a tested query layer ([ADR 0007](docs/decisions/0007-phase4-dashboard.md)).
 
 ## Design decisions
 
@@ -135,6 +139,7 @@ Operational procedures (crashed consumer, rebuilding from bronze, the DLQ, rate 
 | Two range tiers (plausible vs hard limit) | Unusual weather is real and must not be discarded; 500 K is a unit bug | [0005](docs/decisions/0005-phase3-gold-quality-lineage.md) |
 | Monthly partitions on `valid_time`, retention off by default | Gold and retention both work a date at a time; the demo dataset is the full history | [0005](docs/decisions/0005-phase3-gold-quality-lineage.md) |
 | Stateless detector reading silver | A restart loses nothing; no changelog to maintain at this scale | [0006](docs/decisions/0006-phase4-anomaly-detector.md) |
+| LLM sees only a code-built fact sheet; numbers checked after | An LLM that computes nothing can be checked; confidence is decided by code, explained by the model | [0008](docs/decisions/0008-phase5-grounded-briefings.md) |
 
 ## Engineering standards
 
@@ -149,6 +154,7 @@ Python 3.12+, full type hints, ruff and mypy in strict mode, pre-commit hooks, C
 - **A full-history gold build is extrapolated, not measured** (about 15 s per day suggests roughly four hours for ~1,000 days). The full `make backfill` has not been run.
 - **The dashboard has been rendered headlessly - including on the real data - but not reviewed in a browser**, and has no screenshots yet.
 - **Quarantine is per message**, so one bad value drops that report's other valid variables (3 of 27,102 messages in the 30-day run).
+- **LLM briefings have not run against the real API** - only against a deterministic fake client and stubbed SDK replies, because no API key has been added. The grounding check catches invented numbers, not numbers used for the wrong thing, and misses numbers written as words.
 - Single-broker Kafka and a single Postgres: a laptop-scale design. At 1000x scale this would move to Flink or Kafka Streams, Spark, Iceberg, Schema Registry, managed Kafka and a cloud warehouse.
 
 ## Data sources and attribution
