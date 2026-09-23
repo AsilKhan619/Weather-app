@@ -343,7 +343,44 @@ When a transform bug is fixed (the altimeter-fallback fix is the example), rows 
 old values. Rebuild silver from the lake (section 4), then `make gold ARGS=--full`. Nothing else needs to
 change: bronze holds the untouched events.
 
-## 14. Provider attribution
+## 14. LLM briefings (`make briefings`)
+
+Off by default. To turn on: set a **billing cap in the Anthropic console first**, then in `.env`
+set `ANTHROPIC_API_KEY=...` and `LLM_ENABLED=true`, and `uv sync --extra llm`.
+
+```bash
+make briefings ARGS=--dry-run                           # print the fact sheets; no API call
+make briefings ARGS="--dry-run --location london"       # one location
+make briefings ARGS="--as-of 2026-09-01T12:00"          # brief from a point inside loaded history
+make briefing-consumer                                  # brief when alerts arrive (ARGS=--drain)
+```
+
+`make briefings` ends with a line such as `published=24, flagged=1` or, with the LLM off,
+`disabled=25`. Every request is a row in `ops.llm_calls`:
+
+```bash
+docker exec nimbus-postgres psql -U nimbus -d nimbus -c \
+  "select outcome, count(*), round(sum(cost_usd)::numeric, 4) as usd, left(max(error), 120)
+   from ops.llm_calls where called_at > now() - interval '1 day' group by 1"
+```
+
+- **`no_data` for every location:** there are no forecasts in the 48 hours after `as_of`. With
+  only backfilled history, pass an `--as-of` inside it; for "now", run a live cycle first
+  (`make produce-forecasts ARGS=--once && make drain`).
+- **`error` outcomes:** the API was unreachable, rate limited after retries, or the key is wrong
+  (`AuthenticationError` in `error`). The run carried on; re-run later - an identical fact sheet
+  is served from cache, a new one is generated.
+- **`invalid_output` then `success`:** the one retry worked. Two `invalid_output` rows for one
+  fact sheet mean nothing was stored; read `error`.
+- **`grounding_failed` / flagged briefings:** the model wrote a number that is not in the fact
+  sheet, or changed the confidence or the model. They are on the dashboard's Briefings page with
+  the reasons, never published. A steady rate means the prompt needs work: add
+  `prompts/briefing_v2.md` and bump `prompt_version` in `config/llm.yaml` (never edit v1 - the
+  version is part of the cache key and of every log row).
+- **Costs look high:** check the cache hit rate on the LLM Usage page. The fact sheet is taken as of
+  the top of the hour, so repeated runs within an hour should all be cache hits.
+
+## 15. Provider attribution
 
 Forecast data is from [Open-Meteo](https://open-meteo.com/) (CC BY 4.0;
 non-commercial use). Historical observations are from the Iowa Environmental
