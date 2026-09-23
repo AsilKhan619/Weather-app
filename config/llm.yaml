@@ -1,0 +1,41 @@
+# LLM briefings (brief section 10, ADR 0008). The model itself is a setting
+# (NIMBUS_BRIEFING_MODEL, default claude-haiku-4-5); everything else lives here.
+
+# The prompt template in src/nimbus/llm/prompts/<prompt_version>.md. Bump the version
+# (new file, never edit an old one) whenever the wording changes: the version is part of
+# the cache key and of every ops.llm_calls row, so old and new outputs stay comparable.
+prompt_version: briefing_v1
+
+# One request's ceiling. A briefing is ~200 output tokens; the cap only guards runaways.
+max_tokens: 1024
+timeout_seconds: 30
+# SDK retries for 429/5xx/connection errors (its own backoff). Invalid *output* is retried
+# separately, exactly once, by the generator.
+max_retries: 2
+
+# USD per million tokens, first-party API list prices (checked 2026-09-23). Used only to
+# estimate cost in ops.llm_calls; the bill is the source of truth. Cache writes cost 1.25x
+# input, cache reads 0.1x.
+prices_per_million_tokens:
+  claude-haiku-4-5:
+    input: 1.00
+    output: 5.00
+  claude-sonnet-5:
+    input: 2.00
+    output: 10.00
+  claude-opus-5:
+    input: 5.00
+    output: 25.00
+
+# Confidence is computed by code from model agreement and handed to the LLM, which must
+# explain it, not choose it. Metric: mean over the next 48 hours of (max - min across
+# models) of 2 m temperature, in K. Set against measured day-1..2 forecast error (temperature
+# MAE ~1.4-1.5 K, ADR 0005): models closer together than one typical error -> high.
+confidence:
+  high_max_spread_k: 1.5
+  medium_max_spread_k: 3.0
+
+# "Each model's recent accuracy at that location": day-1 temperature MAE over this window.
+accuracy_window_days: 30
+# Alerts at the location detected within this many hours count as active.
+active_alert_hours: 24

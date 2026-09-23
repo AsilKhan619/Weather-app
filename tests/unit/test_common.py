@@ -10,7 +10,7 @@ def test_settings_default_to_llm_disabled() -> None:
     settings = Settings(_env_file=None)
     assert settings.llm_enabled is False
     assert settings.nimbus_agent_model == "claude-sonnet-5"
-    assert settings.nimbus_briefing_model == "claude-haiku-4-5-20251001"
+    assert settings.nimbus_briefing_model == "claude-haiku-4-5"
 
 
 def test_settings_postgres_dsn_uses_psycopg_driver() -> None:

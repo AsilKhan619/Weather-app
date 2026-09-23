@@ -11,36 +11,14 @@ from typing import Any
 import pandas as pd
 from sqlalchemy import Engine, text
 
-# variable -> (display unit, offset, scale): shown = stored * scale + offset
-_DISPLAY: dict[str, tuple[str, float, float]] = {
-    "temperature_2m": ("degC", -273.15, 1.0),
-    "dew_point_2m": ("degC", -273.15, 1.0),
-    "wind_speed_10m": ("m/s", 0.0, 1.0),
-    "pressure_msl": ("hPa", 0.0, 0.01),
-}
+from nimbus.common.units import (  # re-exported: the pages import them from here
+    VARIABLE_LABELS,
+    display,
+    display_error,
+    display_unit,
+)
 
-VARIABLE_LABELS = {
-    "temperature_2m": "Temperature (2 m)",
-    "dew_point_2m": "Dew point (2 m)",
-    "wind_speed_10m": "Wind speed (10 m)",
-    "pressure_msl": "Sea-level pressure",
-}
-
-
-def display_unit(variable: str) -> str:
-    return _DISPLAY[variable][0]
-
-
-def display(variable: str, values: pd.Series) -> pd.Series:
-    """Stored SI value -> display unit."""
-    _, offset, scale = _DISPLAY[variable]
-    return values * scale + offset
-
-
-def display_error(variable: str, values: pd.Series) -> pd.Series:
-    """An *error or difference* in display units: a scale applies, an offset does not
-    (a 2 K error is a 2 degC error, not -271 degC)."""
-    return values * _DISPLAY[variable][2]
+__all__ = ["VARIABLE_LABELS", "display", "display_error", "display_unit"]
 
 
 def _read(engine: Engine, sql: str, params: dict[str, Any] | None = None) -> pd.DataFrame:

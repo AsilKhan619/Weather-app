@@ -1999,7 +1999,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "alembic", specifier = ">=1.18,<2" },
-    { name = "anthropic", marker = "extra == 'llm'" },
+    { name = "anthropic", marker = "extra == 'llm'", specifier = ">=1.6.0,<2" },
     { name = "apache-airflow", marker = "extra == 'orchestration'", specifier = "==3.3.1" },
     { name = "confluent-kafka", specifier = ">=2.15.0,<3" },
     { name = "httpx", specifier = ">=0.28.1,<1.0" },
