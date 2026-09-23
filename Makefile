@@ -1,4 +1,4 @@
-.PHONY: up down logs demo backfill drain reconcile gold quality partitions alerts dashboard test test-integration lint typecheck eval trace replay sync migrate init-topics produce-forecasts produce-observations
+.PHONY: up down logs demo backfill drain reconcile gold quality partitions alerts briefings briefing-consumer dashboard test test-integration lint typecheck eval trace replay sync migrate init-topics produce-forecasts produce-observations
 
 sync:
 	uv sync --all-extras
@@ -26,6 +26,15 @@ produce-observations:
 # Anomaly detector: live events -> weather.alert.v1 (Ctrl+C to stop; ARGS=--drain to catch up and exit)
 alerts:
 	uv run python -m nimbus.alerts.detector $(ARGS)
+
+# LLM briefings (off unless LLM_ENABLED=true; needs `uv sync --extra llm`). ARGS=--dry-run prints
+# the fact sheets; ARGS="--as-of 2026-09-01T12:00" briefs from a point inside loaded history.
+briefings:
+	uv run python -m nimbus.jobs.generate_briefings $(ARGS)
+
+# Briefings when alerts arrive: weather.alert.v1 -> weather.briefing.v1 (ARGS=--drain to catch up and exit)
+briefing-consumer:
+	uv run python -m nimbus.llm.alert_briefings $(ARGS)
 
 # Streamlit dashboard on http://localhost:8501 (needs `uv sync --extra dashboard`)
 dashboard:

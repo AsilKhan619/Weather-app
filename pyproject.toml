@@ -32,8 +32,8 @@ ingestion = ["pyarrow>=25.0.1,<26"]
 dashboard = ["streamlit>=1.63.0,<2"]
 # Phase 6: agent SQL guardrails
 sql = ["sqlglot>=30.17.0,<31"]
-# Phase 5/6: LLM client (pin exact version when that phase starts)
-llm = ["anthropic"]
+# Phase 5/6: LLM client. 1.x runs on httpx2, so it does not touch the httpx<1.0 pin above
+llm = ["anthropic>=1.6.0,<2"]
 # Phase 7: orchestration (3.x is a rewrite of 2.x — see ADR 0001)
 orchestration = ["apache-airflow==3.3.1"]
 

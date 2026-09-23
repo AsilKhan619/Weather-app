@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     llm_enabled: bool = False
     anthropic_api_key: str | None = None
     nimbus_agent_model: str = "claude-sonnet-5"
-    nimbus_briefing_model: str = "claude-haiku-4-5-20251001"
+    nimbus_briefing_model: str = "claude-haiku-4-5"
 
     # App
     nimbus_env: str = "dev"

@@ -1,5 +1,5 @@
 """Typed loaders for the YAML files under config/: locations, models, variables, gold,
-quality, storage and alerts."""
+quality, storage, alerts and llm."""
 
 from pathlib import Path
 
@@ -104,3 +104,29 @@ class AlertsConfig(BaseModel):
 def load_alerts_config(path: Path = CONFIG_DIR / "alerts.yaml") -> AlertsConfig:
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     return AlertsConfig.model_validate(raw)
+
+
+class ModelPrice(BaseModel):
+    input: float
+    output: float
+
+
+class ConfidenceConfig(BaseModel):
+    high_max_spread_k: float
+    medium_max_spread_k: float
+
+
+class LLMConfig(BaseModel):
+    prompt_version: str
+    max_tokens: int
+    timeout_seconds: float
+    max_retries: int
+    prices_per_million_tokens: dict[str, ModelPrice]
+    confidence: ConfidenceConfig
+    accuracy_window_days: int
+    active_alert_hours: int
+
+
+def load_llm_config(path: Path = CONFIG_DIR / "llm.yaml") -> LLMConfig:
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return LLMConfig.model_validate(raw)
