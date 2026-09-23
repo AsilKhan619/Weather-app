@@ -1,10 +1,13 @@
 """Briefings when alerts arrive (brief section 10): consumes weather.alert.v1 and briefs each
 alerted location once per batch, with the alert in its fact sheet.
 
-The fact sheet is taken as of the top of the current hour, so a burst of alerts for one
-location - the three models of one cycle, say - lands on one fact sheet and one cached
-briefing rather than one paid call each. With LLM_ENABLED=false the consumer still runs and
-commits: the skip is logged per location, and the alerts themselves are untouched."""
+The fact sheet is taken as of the top of the current hour - or as of the alert itself if
+that is later - so a burst of alerts for one location (the three models of one cycle, say)
+lands on one fact sheet and one cached briefing rather than one paid call each, and the
+alert that triggered the briefing is always in it. (Found by the phase review: an observation
+alert at 14:51 used to be cut off by a 14:00 fact sheet, so the "alert" briefing was the
+daily one.) With LLM_ENABLED=false the consumer still runs and commits: the skip is
+logged per location, and the alerts themselves are untouched."""
 
 import logging
 from collections.abc import Sequence
@@ -22,7 +25,7 @@ from nimbus.common.logging import configure_logging
 from nimbus.common.schemas import AlertPayload
 from nimbus.common.settings import get_settings
 from nimbus.jobs.generate_briefings import make_briefing_client
-from nimbus.llm.briefings import BriefingResult, generate_briefing
+from nimbus.llm.briefings import BriefingResult, generate_briefing, publish_pending
 from nimbus.llm.client import BriefingClient
 from nimbus.streaming.cli import parse_drain_flag
 from nimbus.streaming.microbatch import run_microbatch_loop
@@ -34,7 +37,8 @@ CONSUMER_GROUP = "briefing-on-alert"
 
 
 def alerts_by_location(messages: Sequence[KafkaMessageLike]) -> dict[str, AlertPayload]:
-    """The most recent alert per location in the batch; unreadable messages are skipped."""
+    """The latest alert per location in the batch (by event time, then detection time);
+    unreadable messages are skipped."""
     latest: dict[str, AlertPayload] = {}
     for msg in messages:
         raw = msg.value()
@@ -46,7 +50,10 @@ def alerts_by_location(messages: Sequence[KafkaMessageLike]) -> dict[str, AlertP
             logger.warning("skipped an unreadable alert event")
             continue
         current = latest.get(alert.location_id)
-        if current is None or alert.detected_at >= current.detected_at:
+        if current is None or (alert.event_time, alert.detected_at) >= (
+            current.event_time,
+            current.detected_at,
+        ):
             latest[alert.location_id] = alert
     return latest
 
@@ -62,7 +69,7 @@ def process_batch(
     model: str,
     as_of: datetime | None = None,
 ) -> list[BriefingResult]:
-    as_of = as_of or datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+    hour = as_of or datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     results = []
     for location_id, alert in sorted(alerts_by_location(messages).items()):
         location = locations.get(location_id)
@@ -72,7 +79,7 @@ def process_batch(
             generate_briefing(
                 engine,
                 location,
-                as_of,
+                max(hour, alert.event_time),
                 client=client,
                 config=config,
                 producer=producer,
@@ -93,6 +100,8 @@ def main() -> None:
     client = make_briefing_client(settings)
     producer = make_producer(settings) if client is not None else None
     locations = {loc.id: loc for loc in load_locations()}
+    if producer is not None:
+        publish_pending(engine, producer)
     consumer = make_consumer(settings, group_id=CONSUMER_GROUP)
 
     def handle_batch(messages: Sequence[KafkaMessageLike]) -> None:

@@ -288,7 +288,9 @@ def llm_usage_by_outcome(engine: Engine, days: int = 7) -> pd.DataFrame:
         "SELECT model, outcome, count(*) AS calls, sum(input_tokens) AS input_tokens, "
         "sum(output_tokens) AS output_tokens, sum(cost_usd) AS cost_usd, "
         "avg(latency_ms) FILTER (WHERE outcome NOT IN ('cache_hit', 'disabled')) "
-        "AS avg_latency_ms FROM ops.llm_calls "
+        "AS avg_latency_ms, "
+        "sum(latency_ms) FILTER (WHERE outcome NOT IN ('cache_hit', 'disabled')) "
+        "AS total_latency_ms FROM ops.llm_calls "
         "WHERE called_at >= now() - make_interval(days => :d) GROUP BY 1, 2 ORDER BY 1, 2",
         {"d": days},
     )

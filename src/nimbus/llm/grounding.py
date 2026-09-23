@@ -2,51 +2,92 @@
 from, the fact sheet. A briefing that fails is stored and flagged, never published.
 
 Rules (ADR 0008):
-- The allowed numbers are every numeric value in the fact sheet plus every number written
-  inside its strings (an as-of date, a model id such as ecmwf_ifs025, the 48-hour horizon).
+- The allowed numbers are the fact sheet's *numeric values*. Digits inside its names are not
+  facts: `ecmwf_ifs025`, `temperature_2m` or the as-of date do not make 25, 2 or 20 quotable.
+  Instead, those identifiers are removed from the briefing's text before its numbers are read,
+  so naming a model or quoting the date is never a failure either.
 - A briefing number with k decimals is grounded if some allowed value rounds to it at k
-  decimals, ignoring sign: "1.2 degrees low" may quote a bias of -1.2.
+  decimals (half up). Signs must agree: "-16.9" is not grounded by 16.9, and the prompt tells
+  the model to write negative numbers with a minus sign.
 - `confidence` must be the fact sheet's level, and `most_reliable_model` must be the sheet's
   most accurate model when it names one (otherwise one of its models): code decided both.
 
-Numbers spelled out in words ("three") are not detected; that is a known gap."""
+Found by the phase review and fixed: signs were once ignored (so a flipped sign passed), digits
+inside identifiers were once allowed numbers (so "gusts to 25 m/s" passed on every sheet), and
+".5" was invisible to the number scanner. Numbers spelled out in words ("three") are still not
+detected; that is a known gap."""
 
 import re
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
 from nimbus.llm.schemas import BriefingOutput
 
-# A leading minus counts only when it is not a hyphen between two numbers ("20-24" is two
-# positive numbers) or part of an identifier.
-_NUMBER = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?|(?<=[A-Za-z_-])\d+(?:\.\d+)?")
+# Digits with optional decimal parts, including a leading-dot form (".5") and malformed
+# multi-dot runs ("3.14.15", checked part by part so nothing slips through).
+_NUMBER = re.compile(r"\.?\d+(?:\.\d+)*")
+# A thousands separator between digit groups: "1,013" is one number, 1013.
+_THOUSANDS = re.compile(r"(?<=\d),(?=\d{3}(?!\d))")
+
+
+def _is_negative(text: str, start: int) -> bool:
+    """A minus sign directly before the number counts unless it joins two tokens: "20-24" is
+    a range and "day-1" a label, not negative numbers."""
+    if start == 0 or text[start - 1] != "-":
+        return False
+    before = text[start - 2] if start >= 2 else " "
+    return not (before.isalnum() or before in "._")
 
 
 def numbers_in(text: str) -> list[str]:
-    return _NUMBER.findall(text)
+    """Every number in the text as a signed decimal string."""
+    text = _THOUSANDS.sub("", text)
+    tokens: list[str] = []
+    for match in _NUMBER.finditer(text):
+        raw = match.group()
+        parts = [raw] if raw.count(".") <= 1 else [p for p in raw.split(".") if p]
+        negative = _is_negative(text, match.start())
+        for i, part in enumerate(parts):
+            sign = "-" if negative and i == 0 else ""
+            tokens.append(sign + (part if not part.startswith(".") else "0" + part))
+    return tokens
 
 
-def _allowed_values(node: Any, into: set[Decimal]) -> None:
+def _walk(node: Any, values: set[Decimal], identifiers: set[str]) -> None:
     if isinstance(node, bool) or node is None:
         return
     if isinstance(node, int | float):
-        into.add(Decimal(str(node)))
+        values.add(Decimal(str(node)))
     elif isinstance(node, str):
-        for token in numbers_in(node):
-            into.add(Decimal(token))
+        if any(ch.isdigit() for ch in node):
+            identifiers.add(node)
     elif isinstance(node, dict):
         for key, value in node.items():
-            _allowed_values(key, into)
-            _allowed_values(value, into)
+            _walk(key, values, identifiers)
+            _walk(value, values, identifiers)
     elif isinstance(node, list | tuple):
         for value in node:
-            _allowed_values(value, into)
+            _walk(value, values, identifiers)
 
 
 def allowed_numbers(sheet: dict[str, Any]) -> set[Decimal]:
     values: set[Decimal] = set()
-    _allowed_values(sheet, values)
+    _walk(sheet, values, set())
     return values
+
+
+def sheet_identifiers(sheet: dict[str, Any]) -> list[str]:
+    """Strings in the sheet that contain digits (model ids, variable names, dates), longest
+    first so a longer identifier is removed before any shorter one it contains."""
+    identifiers: set[str] = set()
+    _walk(sheet, set(), identifiers)
+    return sorted(identifiers, key=len, reverse=True)
+
+
+def strip_identifiers(text: str, identifiers: list[str]) -> str:
+    for identifier in identifiers:
+        text = re.sub(rf"(?<![\w.]){re.escape(identifier)}(?![\w])", " ", text)
+    return text
 
 
 def _decimals(token: str) -> int:
@@ -54,15 +95,19 @@ def _decimals(token: str) -> int:
 
 
 def is_grounded(token: str, allowed: set[Decimal]) -> bool:
-    quoted = abs(Decimal(token))
+    try:
+        quoted = Decimal(token)
+    except InvalidOperation:
+        return False
     quantum = Decimal(1).scaleb(-_decimals(token))
-    return any(abs(value).quantize(quantum, rounding=ROUND_HALF_UP) == quoted for value in allowed)
+    return any(value.quantize(quantum, rounding=ROUND_HALF_UP) == quoted for value in allowed)
 
 
 def check_grounding(briefing: BriefingOutput, sheet: dict[str, Any]) -> list[str]:
     """Human-readable failures; an empty list means the briefing is grounded."""
     failures: list[str] = []
     allowed = allowed_numbers(sheet)
+    identifiers = sheet_identifiers(sheet)
     fields = {
         "headline": briefing.headline,
         "summary": briefing.summary,
@@ -70,7 +115,7 @@ def check_grounding(briefing: BriefingOutput, sheet: dict[str, Any]) -> list[str
         **{f"notable_risks[{i}]": risk for i, risk in enumerate(briefing.notable_risks)},
     }
     for field, text in fields.items():
-        for token in numbers_in(text):
+        for token in numbers_in(strip_identifiers(text, identifiers)):
             if not is_grounded(token, allowed):
                 failures.append(f"{field}: {token} is not in the fact sheet")
 

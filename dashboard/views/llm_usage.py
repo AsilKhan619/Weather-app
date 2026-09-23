@@ -23,8 +23,10 @@ top[2].metric(
     "Cache hit rate",
     "n/a" if api_calls + cache_hits == 0 else f"{cache_hits / (api_calls + cache_hits):.0%}",
 )
-latency = api["avg_latency_ms"].dropna()
-top[3].metric("Avg latency", "n/a" if latency.empty else f"{latency.mean():.0f} ms")
+# Weighted by calls: an average of the per-outcome averages would let one failed call count
+# as much as a hundred successful ones.
+total_latency = float(api["total_latency_ms"].fillna(0).sum())
+top[3].metric("Avg latency", "n/a" if api_calls == 0 else f"{total_latency / api_calls:.0f} ms")
 if not get_settings().llm_enabled:
     st.caption("The LLM is off (`LLM_ENABLED=false`): requests are logged as `disabled`.")
 

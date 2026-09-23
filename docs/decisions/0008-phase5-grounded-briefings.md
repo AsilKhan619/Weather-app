@@ -72,10 +72,13 @@ the job moves to the next location.
 ### Grounding check
 
 Every number in the headline, summary, reason and risks must appear in the fact sheet, or round
-from one of its numbers at the precision quoted (21.4 may be written 21; -1.25 may be written 1.3
-"degrees low" - sign is ignored, half rounds up). Allowed numbers include those inside the sheet's
-strings (a model id like `ecmwf_ifs025`, the as-of date, variable names like `temperature_2m`), so
-naming things is never a failure. A hyphen between numbers ("20-24") is a range, not a minus sign.
+from one of its numeric values at the precision quoted (21.4 may be written 21; half rounds up).
+**Signs must agree** - "-16.9" is not grounded by 16.9, and the prompt tells the model to write
+negative numbers with a minus sign. **Digits inside the sheet's names are not facts**: before the
+briefing's numbers are read, every sheet string containing digits (model ids like `ecmwf_ifs025`,
+variable names like `temperature_2m`, the `date`) is removed from its text, so naming them is never
+a failure but "gusts to 25 m/s" is. A hyphen between numbers ("20-24") is a range, not a minus
+sign; "1,013" is one number; ".5" and malformed runs like "3.14.15" are read, not skipped.
 Beyond numbers: `confidence` must equal the sheet's level, and `most_reliable_model` must be the
 sheet's most accurate model when it names one.
 
@@ -85,8 +88,8 @@ shows them). The brief's acceptance test - a briefing with an invented number is
 unit test (`97 is not in the fact sheet`) and an integration test (stored flagged, the producer
 never called, and a repeat request is a cache hit that is still not published).
 
-**Known gaps:** numbers written as words ("three") are not detected; a number can be grounded by
-coincidence (any 16.9 in the sheet grounds any "16.9" in the text, whatever it refers to). The check
+**Known gaps:** numbers written as words ("three") are not detected; a number can still be grounded
+by coincidence - any 16.9 in the sheet grounds any "16.9" in the text, whatever it refers to. The check
 guarantees "no number from outside the facts", not "every number used correctly".
 
 ### Cache: identical inputs never pay twice
@@ -121,7 +124,9 @@ rest of each request, the fact sheet, is different every time. The application-l
 ### Delivery
 
 Same pattern as the anomaly detector (ADR 0006): store first, publish to `weather.briefing.v1`,
-set `published_at` only after Kafka confirms. At-least-once; the briefing id is the dedupe key.
+set `published_at` only after Kafka confirms. At-least-once; the briefing id is the dedupe key. A
+failed delivery is contained (the run carries on) and retried by `publish_pending` at the start of
+the next daily run or consumer start.
 
 ### LLM disabled
 
@@ -130,6 +135,34 @@ the data and builds the fact sheet (proving the data side on real data - the liv
 prints one), serves an already-cached briefing if one exists, and otherwise logs `disabled` and
 moves on. There is no silent fallback to the fake client in the pipeline; `LLM_ENABLED=true` with
 a bad key fails loudly on the first call (logged as `error`).
+
+## Independent review: eight findings, all fixed
+
+A review of the phase diff against this ADR and the brief found eight issues; four were reproduced
+against the real functions. All are fixed with regression tests.
+
+1. **Alert briefings could omit their alert** (high). The consumer briefed as of the top of the
+   hour, and the fact sheet counts alerts up to `as_of`, so an observation alert at 14:51 was cut
+   off by a 14:00 sheet - identical to the daily one, served from cache, trigger `daily`.
+   `as_of` is now the later of the hour and the alert's own time.
+2. **A flipped sign passed** ("-16.9" on a sheet saying 16.9): grounding ignored sign by design.
+   Signs must now agree.
+3. **Identifier digits were allowed numbers**, so 25 (`ecmwf_ifs025`), 10 (`wind_speed_10m`) and
+   the date's 20 were quotable on every sheet. Identifiers are now stripped from the text instead.
+4. **".5" was invisible** to the number scanner, and "3.14.15" hid its last part. Both are read.
+5. **The same facts could hash differently** - two run-change alerts in one cycle tied on the sort
+   key, so their order (and the cache key) followed Postgres's row order: a second paid call for
+   the same facts. The sort is now total, and the query ordered.
+6. **A Kafka failure aborted the daily run** and stranded the stored briefing unpublished. A
+   publish failure is now logged and contained, and `publish_pending` sends grounded, unpublished
+   briefings at the start of every run.
+7. **Failed calls were logged at 0 ms** (a timeout can take minutes), and the LLM Usage page
+   averaged per-outcome averages. Failures now log wall-clock time; the page weights by calls.
+8. **Accuracy included the as-of day** - mostly in the future of `as_of`, and cast in SQL under
+   the session time zone. The window is now whole UTC days strictly before `as_of`, computed in
+   Python.
+
+Also fixed: "1,013 hPa" used to be read as 1 and 13, rejecting a faithful briefing.
 
 ## Alternatives considered
 
@@ -143,12 +176,13 @@ a bad key fails loudly on the first call (logged as `error`).
 
 ## What is and isn't verified
 
-- Verified: 27 unit tests (fact sheet, confidence, grounding incl. the acceptance test, schema
-  validation, cost, the real client against stubbed SDK replies - JSON schema sent, invalid reply
-  logged with usage, truncation/refusal, timeout mapped to unavailable) and 11 Postgres integration
-  tests (store and publish, cache hit skips the client, flagged never published, one retry,
-  unavailable, disabled, no data, alert bursts), plus the Briefings and LLM Usage pages rendered
-  headlessly on seeded data.
+- Verified: 30 unit tests (fact sheet, confidence, grounding incl. the acceptance test and the
+  review's regressions, schema validation, cost, the real client against stubbed SDK replies -
+  JSON schema sent, invalid reply logged with usage, truncation/refusal, timeout mapped to
+  unavailable) and 15 Postgres integration tests (store and publish, cache hit skips the client,
+  flagged never published, one retry, unavailable, disabled, no data, alert bursts, a late alert,
+  a Kafka failure then republish, failure latency, the accuracy window), plus the Briefings and LLM
+  Usage pages rendered headlessly on seeded data.
 - **Not verified: any real API call.** The real client is tested only against stubbed replies. The
   first run with a key must confirm the request shape is accepted, the grounding pass rate on real
   model output, latency and cost - and a billing cap should be set in the Anthropic console before
