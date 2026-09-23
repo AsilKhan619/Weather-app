@@ -117,6 +117,7 @@ Design: [ADR 0008](decisions/0008-phase5-grounded-briefings.md). Built and teste
 - [x] `gold.briefing` + `weather.briefing.v1` (store, publish, mark); `make briefings` (daily, `--dry-run`) and `make briefing-consumer` (on alerts)
 - [x] Versioned prompt file (`src/nimbus/llm/prompts/briefing_v1.md`)
 - [x] Dashboard: Briefings, LLM Usage pages
+- [x] Independent review of the phase diff: 8 findings (1 high), all fixed with regression tests - ADR 0008
 - [ ] User adds Anthropic API key + billing cap, then one real run to confirm the request shape, grounding pass rate, latency and cost (blocked until then)
 
 *Acceptance:*

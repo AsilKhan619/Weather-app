@@ -291,3 +291,96 @@ def test_a_burst_of_alerts_for_one_location_makes_one_briefing(engine: Engine) -
     assert len(client.calls) == 1
     (briefing,) = _briefings(engine)
     assert (briefing["trigger"], briefing["trigger_ref"]) == ("alert", "a2")
+
+
+# --- review findings -------------------------------------------------------------------------
+
+
+def _insert_alert(engine: Engine, alert_id: str, event_time: datetime) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO gold.alert (alert_id, rule, severity, location_id, variable, station, "
+                "event_time, metric, threshold, details, triggered_by_event_id, detected_at) "
+                "VALUES (:id, 'observation_miss', 'warning', :loc, 'temperature_2m', :station, "
+                ":t, 7.0, 6.0, '{}'::jsonb, 'evt', :t)"
+            ),
+            {"id": alert_id, "loc": PLACE.id, "station": PLACE.station, "t": event_time},
+        )
+
+
+def test_an_alert_later_than_the_hour_is_in_its_own_briefing(engine: Engine) -> None:
+    """Review finding: an observation alert at 12:51 was cut off by a 12:00 fact sheet, so the
+    "alert" briefing was the daily one, served from cache."""
+    from nimbus.llm.alert_briefings import process_batch
+
+    client = FakeBriefingClient()
+    _generate(engine, client)  # the 12:00 daily briefing exists and is cached
+    observed = AS_OF + timedelta(minutes=51)
+    _insert_alert(engine, "late", observed)
+    event = _alert_event("late", PLACE.id, 12).replace(
+        AS_OF.isoformat().encode()[:16], observed.isoformat().encode()[:16]
+    )
+    assert observed.isoformat().encode()[:16] in event
+
+    (result,) = process_batch(
+        [_Msg(event)], engine, {PLACE.id: PLACE}, client=client, config=CONFIG,
+        producer=None, model="fake-briefing-model", as_of=AS_OF,
+    )  # fmt: skip
+
+    assert result.status == "stored"  # a new briefing, not the cached daily one
+    assert len(client.calls) == 2
+    briefing = next(b for b in _briefings(engine) if b["trigger"] == "alert")
+    assert [a["rule"] for a in briefing["fact_sheet"]["active_alerts"]] == ["observation_miss"]
+
+
+def test_a_kafka_failure_stores_the_briefing_and_a_later_run_publishes_it(engine: Engine) -> None:
+    """Review finding: an unconfirmed delivery raised, aborted the whole daily run and left the
+    briefing unpublished forever."""
+    from nimbus.llm.briefings import publish_pending
+
+    broken = MagicMock()
+    broken.flush.return_value = 1  # one message never confirmed
+    result = _generate(engine, FakeBriefingClient(), producer=broken)
+
+    assert result.status == "stored"  # no exception reached the caller
+    assert _briefings(engine)[0]["published_at"] is None
+
+    healthy = _producer()
+    assert publish_pending(engine, healthy) == 1
+    assert _briefings(engine)[0]["published_at"] is not None
+    assert publish_pending(engine, healthy) == 0  # never twice
+
+
+def test_a_failed_call_logs_how_long_it_took(engine: Engine) -> None:
+    """Review finding: failed calls were logged at 0 ms although a timeout can take minutes."""
+    import time
+
+    from nimbus.llm.client import LLMUnavailableError
+
+    class Slow(FakeBriefingClient):
+        def generate(self, system: str, user: str) -> Any:
+            time.sleep(0.05)
+            raise LLMUnavailableError("APITimeoutError: slow")
+
+    _generate(engine, Slow())
+    (call,) = _calls(engine)
+    assert call["outcome"] == "error" and call["latency_ms"] >= 50
+
+
+def test_accuracy_comes_only_from_whole_days_before_as_of(engine: Engine) -> None:
+    """Review finding: the as-of day itself was included, although most of it is after as_of."""
+    chunked_upsert(
+        engine,
+        accuracy_daily_table,
+        ["valid_date", "location_id", "model", "variable", "lead_day"],
+        ["n", "bias", "mae", "rmse"],
+        [{"valid_date": AS_OF.date(), "location_id": PLACE.id, "model": "gfs_seamless",
+          "variable": "temperature_2m", "lead_day": 1, "n": 1000, "bias": 0.0, "mae": 0.01,
+          "rmse": 0.01}],
+    )  # fmt: skip
+    _generate(engine, FakeBriefingClient())
+
+    accuracy = _briefings(engine)[0]["fact_sheet"]["accuracy"]
+    assert accuracy["by_model"]["gfs_seamless"]["verified_forecasts"] == 240  # not 1240
+    assert accuracy["most_accurate_model"] == "ecmwf_ifs025"

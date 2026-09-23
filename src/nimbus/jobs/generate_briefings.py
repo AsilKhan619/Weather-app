@@ -16,7 +16,7 @@ from nimbus.common.kafka import make_producer
 from nimbus.common.logging import configure_logging
 from nimbus.common.settings import Settings, get_settings
 from nimbus.jobs.replay import parse_utc
-from nimbus.llm.briefings import generate_briefing
+from nimbus.llm.briefings import generate_briefing, publish_pending
 from nimbus.llm.client import AnthropicBriefingClient, BriefingClient
 from nimbus.llm.facts import build_fact_sheet, read_fact_inputs
 
@@ -64,6 +64,8 @@ def main() -> None:
     client = make_briefing_client(settings)
     producer = make_producer(settings) if client is not None else None
     statuses: Counter[str] = Counter()
+    if producer is not None:
+        statuses["republished"] = publish_pending(engine, producer)
     for location in locations:
         result = generate_briefing(
             engine,

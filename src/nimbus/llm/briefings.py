@@ -13,13 +13,14 @@
 import hashlib
 import json
 import logging
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
-from confluent_kafka import Producer
+from confluent_kafka import KafkaException, Producer
 from sqlalchemy import Engine, text
 
 from nimbus.common.config import LLMConfig, Location
@@ -87,8 +88,11 @@ def log_call(
     result: LLMResult | None = None,
     error: str | None = None,
     purpose: str = "briefing",
+    latency_ms: int | None = None,
 ) -> None:
     usage = result.usage if result else LLMUsage()
+    if latency_ms is None:
+        latency_ms = result.latency_ms if result else 0
     with engine.begin() as conn:
         conn.execute(
             text(
@@ -108,7 +112,7 @@ def log_call(
                 "output": usage.output_tokens,
                 "cache_read": usage.cache_read_tokens,
                 "cache_write": usage.cache_write_tokens,
-                "latency": result.latency_ms if result else 0,
+                "latency": latency_ms,
                 "cost": estimate_cost_usd(model, usage, config),
                 "outcome": outcome,
                 "error": error or (result.error if result else None),
@@ -215,6 +219,39 @@ def publish(engine: Engine, producer: Producer, row: dict[str, Any]) -> bool:
     return True
 
 
+def try_publish(engine: Engine, producer: Producer | None, row: dict[str, Any] | None) -> bool:
+    """Publish if possible. A Kafka failure is logged, not raised: the briefing stays stored
+    with `published_at IS NULL` and `publish_pending` sends it on a later run (found by the
+    phase review - a raise here used to abort the whole daily run and strand the row)."""
+    if producer is None or row is None:
+        return False
+    try:
+        return publish(engine, producer, row)
+    except (RuntimeError, KafkaException, BufferError) as exc:
+        logger.warning(
+            "briefing stored but not published; will retry on the next run",
+            extra={"event_id": row["briefing_id"], "error": str(exc)},
+        )
+        return False
+
+
+def publish_pending(engine: Engine, producer: Producer, max_age_days: int = 7) -> int:
+    """Send grounded briefings that were stored but never confirmed on the topic."""
+    with engine.connect() as conn:
+        rows = (
+            conn.execute(
+                text(
+                    "SELECT * FROM gold.briefing WHERE grounding_passed AND published_at IS NULL "
+                    "AND created_at >= now() - make_interval(days => :days) ORDER BY created_at"
+                ),
+                {"days": max_age_days},
+            )
+            .mappings()
+            .all()
+        )
+    return sum(try_publish(engine, producer, dict(row)) for row in rows)
+
+
 def generate_briefing(
     engine: Engine,
     location: Location,
@@ -243,8 +280,7 @@ def generate_briefing(
         log_call(
             engine, model=model_name, config=config, outcome="cache_hit", sheet_hash=sheet_hash
         )
-        if producer is not None:
-            publish(engine, producer, cached)
+        try_publish(engine, producer, cached)
         return BriefingResult(location.id, "cached", bid, tuple(cached["grounding_failures"]))
 
     if client is None:
@@ -254,9 +290,11 @@ def generate_briefing(
     system, user = load_prompt(config.prompt_version), user_message(sheet)
     output: BriefingOutput | None = None
     for attempt in range(1, MAX_ATTEMPTS + 1):
+        started = time.perf_counter()
         try:
             result = client.generate(system, user)
         except LLMUnavailableError as exc:
+            # Wall-clock time including the SDK's own retries: a timeout is not free.
             log_call(
                 engine,
                 model=model_name,
@@ -265,6 +303,7 @@ def generate_briefing(
                 sheet_hash=sheet_hash,
                 attempt=attempt,
                 error=str(exc),
+                latency_ms=int((time.perf_counter() - started) * 1000),
             )
             logger.warning(
                 "LLM unavailable; briefing skipped",
@@ -319,5 +358,5 @@ def generate_briefing(
         )
         return BriefingResult(location.id, "flagged", bid, tuple(failures))
     row = _stored(engine, bid)
-    sent = producer is not None and row is not None and publish(engine, producer, row)
+    sent = try_publish(engine, producer, row)
     return BriefingResult(location.id, "published" if sent else "stored", bid)

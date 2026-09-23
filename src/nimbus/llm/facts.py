@@ -15,7 +15,7 @@ never trigger a second paid call.
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pandas as pd
@@ -103,7 +103,7 @@ def _accuracy(accuracy: pd.DataFrame, window_days: int) -> dict[str, Any]:
     }
     return {
         "window_days": window_days,
-        "lead": "1 day",
+        "lead_days": 1,
         "by_model": by_model,
         "most_accurate_model": str(ranked.iloc[0]["model"]),
     }
@@ -111,7 +111,12 @@ def _accuracy(accuracy: pd.DataFrame, window_days: int) -> dict[str, Any]:
 
 def _alerts(alerts: pd.DataFrame) -> list[dict[str, Any]]:
     out = []
-    for row in alerts.sort_values(["event_time", "rule", "variable"]).to_dict("records"):
+    # A total order: two models' run-change alerts in one cycle tie on time, rule and
+    # variable, and an unstable order would change the hash - and pay for the same facts twice.
+    ordered = alerts.assign(_subject=alerts["subject"].fillna("").astype(str)).sort_values(
+        ["event_time", "rule", "variable", "_subject", "severity", "metric"], kind="stable"
+    )
+    for row in ordered.to_dict("records"):
         variable = str(row["variable"])
         subject = row["subject"]
         out.append(
@@ -142,6 +147,7 @@ def build_fact_sheet(
     return {
         "location": {"id": location.id, "name": location.name, "station": location.station},
         "as_of": as_of.isoformat(),
+        "date": as_of.astimezone(UTC).date().isoformat(),
         "horizon_hours": HORIZON_HOURS,
         "units": {v: display_unit(v) for v in sorted(forecasts["variable"].unique())}
         if not forecasts.empty
@@ -177,6 +183,7 @@ def read_fact_inputs(
     at or before `as_of`. That works the same for live runs and for backfilled rows (whose
     derived init times make a 'run' sparse), and it never peeks at a forecast issued later."""
     end = as_of + timedelta(hours=HORIZON_HOURS)
+    as_of_day = as_of.astimezone(UTC).date()
     with engine.connect() as conn:
         forecasts = pd.read_sql(
             text(
@@ -194,17 +201,24 @@ def read_fact_inputs(
                 "SELECT model, sum(n) AS n, sum(n * mae) / sum(n) AS mae "
                 "FROM gold.accuracy_daily WHERE location_id = :loc "
                 "AND variable = 'temperature_2m' AND lead_day = 1 "
-                "AND valid_date > CAST(:as_of AS date) - :window "
-                "AND valid_date <= CAST(:as_of AS date) GROUP BY model"
+                "AND valid_date >= :first_day AND valid_date < :as_of_day GROUP BY model"
             ),
             conn,
-            params={"loc": location_id, "as_of": as_of, "window": config.accuracy_window_days},
+            # Whole UTC days strictly before as_of, computed here rather than by casting in
+            # SQL (which would depend on the session time zone): the as-of day itself is
+            # partly in the future of as_of, so it is left out.
+            params={
+                "loc": location_id,
+                "first_day": as_of_day - timedelta(days=config.accuracy_window_days),
+                "as_of_day": as_of_day,
+            },
         )
         alerts = pd.read_sql(
             text(
                 "SELECT rule, severity, variable, coalesce(model, station) AS subject, metric, "
                 "event_time FROM gold.alert WHERE location_id = :loc "
-                "AND event_time > :since AND event_time <= :as_of"
+                "AND event_time > :since AND event_time <= :as_of "
+                "ORDER BY event_time, rule, variable, subject, severity, metric"
             ),
             conn,
             params={

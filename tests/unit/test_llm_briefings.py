@@ -106,6 +106,23 @@ def test_alerts_are_listed_in_display_units() -> None:
                      "subject": None, "size": 7.1, "unit": "hPa"}  # fmt: skip
 
 
+def test_alert_order_does_not_change_the_hash() -> None:
+    """Review finding: two models' run-change alerts in one cycle tied on the sort key, so
+    their order - and the hash, and the cache - followed whatever order Postgres returned."""
+    alerts = pd.DataFrame(
+        {
+            "rule": ["run_change", "run_change"], "severity": ["warning", "warning"],
+            "variable": ["temperature_2m", "temperature_2m"],
+            "subject": ["gfs_seamless", "ecmwf_ifs025"], "metric": [3.4, 3.1],
+            "event_time": [AS_OF, AS_OF],
+        }
+    )  # fmt: skip
+    forward = _sheet(alerts=alerts)
+    reverse = _sheet(alerts=alerts.iloc[::-1].reset_index(drop=True))
+    assert fact_sheet_hash(forward) == fact_sheet_hash(reverse)
+    assert [a["subject"] for a in forward["active_alerts"]] == ["ecmwf_ifs025", "gfs_seamless"]
+
+
 def test_the_hash_is_stable_and_changes_with_any_fact() -> None:
     assert fact_sheet_hash(_sheet()) == fact_sheet_hash(_sheet())
     assert fact_sheet_hash(_sheet()) != fact_sheet_hash(_sheet(maes={"ecmwf_ifs025": 1.5}))
@@ -161,20 +178,55 @@ def test_rounding_from_a_fact_is_allowed_but_changing_it_is_not() -> None:
     allowed = {Decimal("16.94"), Decimal("-1.25"), Decimal("1013.0")}
 
     assert is_grounded("16.9", allowed) and is_grounded("17", allowed)
-    assert is_grounded("1.3", allowed)  # "1.3 degrees low" from a -1.25 bias; half rounds up
+    assert is_grounded("-1.3", allowed)  # half rounds up in magnitude
     assert is_grounded("1013", allowed)
     assert not is_grounded("16.8", allowed)
     assert not is_grounded("18", allowed)
 
 
+def test_a_flipped_sign_is_not_grounded() -> None:
+    """Review finding: signs used to be ignored, so "-16.9" passed on a sheet saying 16.9."""
+    allowed = {Decimal("16.9"), Decimal("-1.25")}
+
+    assert not is_grounded("-16.9", allowed)
+    assert not is_grounded("1.3", allowed)  # a -1.25 is not a 1.3
+    sheet = _sheet()
+    flipped = fake_briefing(sheet).model_copy(update={"summary": "Overnight lows near -16.9 degC."})
+    assert check_grounding(flipped, sheet) == ["summary: -16.9 is not in the fact sheet"]
+
+
 def test_number_extraction() -> None:
     assert numbers_in("from 20-24 degC, then -3.5") == ["20", "24", "-3.5"]
     assert numbers_in("ecmwf_ifs025 and temperature_2m over 48 hours") == ["025", "2", "48"]
+    assert numbers_in("day-1 error (-2.0)") == ["1", "-2.0"]
 
 
-def test_identifiers_and_dates_in_the_sheet_are_allowed_numbers() -> None:
-    allowed = allowed_numbers(_sheet())
-    assert {Decimal("25"), Decimal("2"), Decimal("2026"), Decimal("48")} <= allowed
+def test_numbers_the_scanner_used_to_miss() -> None:
+    """Review finding: a leading-dot number was invisible, and multi-dot runs hid a part."""
+    assert numbers_in("temperatures .5 degC above normal") == ["0.5"]
+    assert numbers_in("version 3.14.15") == ["3", "14", "15"]
+    assert numbers_in("near 1,013 hPa") == ["1013"]  # a separator is not two numbers
+
+
+def test_digits_inside_identifiers_are_not_facts() -> None:
+    """Review finding: `ecmwf_ifs025`, `wind_speed_10m` and the as-of date made 25, 10 and 20
+    quotable on every sheet. Now the identifiers are removed from the text instead, so naming
+    them is fine but borrowing their digits is not."""
+    sheet = _sheet()
+    allowed = allowed_numbers(sheet)
+    assert Decimal("25") not in allowed and Decimal("2026") not in allowed
+    assert Decimal("48") in allowed  # horizon_hours is a real numeric fact
+
+    honest = fake_briefing(sheet)
+    naming = honest.model_copy(
+        update={"summary": f"As of {sheet['date']}, ecmwf_ifs025 leads on temperature_2m."}
+    )
+    borrowing = honest.model_copy(update={"summary": "Gusts to 25 m/s on the 20th."})
+    assert check_grounding(naming, sheet) == []
+    assert check_grounding(borrowing, sheet) == [
+        "summary: 25 is not in the fact sheet",
+        "summary: 20 is not in the fact sheet",
+    ]
 
 
 def test_confidence_and_model_must_match_what_code_decided() -> None:
