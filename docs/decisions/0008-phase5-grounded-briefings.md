@@ -89,20 +89,23 @@ unit test (`97 is not in the fact sheet`) and an integration test (stored flagge
 never called, and a repeat request is a cache hit that is still not published).
 
 **Known gaps:** numbers written as words ("three") are not detected; a number can still be grounded
-by coincidence - any 16.9 in the sheet grounds any "16.9" in the text, whatever it refers to. The check
-guarantees "no number from outside the facts", not "every number used correctly".
+by coincidence - any 16.9 in the sheet grounds any "16.9" in the text, whatever it refers to.
+The check guarantees "no number from outside the facts", not "every number used correctly".
 
 ### Cache: identical inputs never pay twice
 
 `briefing_id = sha256(fact sheet hash | prompt version | model)`, the primary key of
 `gold.briefing`. Before calling the API the generator looks the id up; a hit returns the stored
 briefing (flagged or not), logs `cache_hit` at zero cost, and publishes it only if it is grounded
-and not yet published. A daily run and an alert in the same hour share one fact sheet (`as_of` is
-floored to the hour) and so one paid call. Tested: the second request never reaches the client.
+and not yet published. Runs within one hour share a fact sheet (`as_of` is floored to the hour),
+and so do alerts whose own time is before that hour - several model alerts from one cycle are one
+paid call. An alert newer than the hour moves `as_of` to the alert, because a briefing about an
+alert must contain it. Tested: the second identical request never reaches the client.
 
 **API-side prompt caching is not used.** The system prompt (~450 tokens) is far under Haiku 4.5's
 minimum cacheable prefix of 4,096 tokens - a cache marker on it would silently do nothing - and the
-rest of each request, the fact sheet, is different every time. The application-level cache above is what saves money here.
+rest of each request, the fact sheet, is different every time. The application-level cache above
+is what saves money here.
 
 ### Model, prices, logging
 
