@@ -34,7 +34,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --extra ingestion --extra dashboard
+        run: uv sync --extra ingestion --extra dashboard --extra llm
 
       - name: Configure (the documented quickstart step)
         run: cp .env.example .env
@@ -55,6 +55,19 @@ jobs:
           make produce-observations ARGS=--once
           make drain
           make alerts ARGS=--drain
+
+      - name: Briefing fact sheets from real data (LLM disabled - no key needed)
+        run: |
+          {
+            echo "## A briefing fact sheet built from the real data"
+            echo "The only input an LLM briefing may use. LLM_ENABLED=false, so no call is made."
+            echo '```json'
+            uv run python -m nimbus.jobs.generate_briefings --dry-run --location london
+            echo '```'
+            echo '```'
+            uv run python -m nimbus.jobs.generate_briefings
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Gold idempotency (re-run changes nothing)
         run: |
@@ -149,6 +162,10 @@ jobs:
             echo "### Alerts (gold.alert)"
             echo '```'
             q "select rule, severity, variable, count(*) as alerts, count(published_at) as published from gold.alert group by 1, 2, 3 order by 1, 2, 3"
+            echo '```'
+            echo "### LLM calls (ops.llm_calls)"
+            echo '```'
+            q "select purpose, model, outcome, count(*) as calls, sum(input_tokens) as input_tokens, sum(output_tokens) as output_tokens, round(sum(cost_usd)::numeric, 4) as cost_usd from ops.llm_calls group by 1, 2, 3 order by 1, 2, 3"
             echo '```'
             q "select rule, severity, location_id, coalesce(model, station, '') as subject, variable, round(metric::numeric, 2) as metric, threshold, event_time from gold.alert order by detected_at limit 12"
           } >> "$GITHUB_STEP_SUMMARY"

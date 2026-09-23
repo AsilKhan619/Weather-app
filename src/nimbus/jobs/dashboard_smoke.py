@@ -18,6 +18,8 @@ PAGES = [
     ("Forecast vs Actual", "views/forecast_vs_actual.py"),
     ("Accuracy", "views/accuracy.py"),
     ("Lineage", "views/lineage.py"),
+    ("Briefings", "views/briefings.py"),
+    ("LLM Usage", "views/llm_usage.py"),
 ]
 
 

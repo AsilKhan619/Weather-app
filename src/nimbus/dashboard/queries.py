@@ -251,3 +251,66 @@ def best_model_by_location(
     for column in ("mae", "margin"):
         frame[column] = display_error(variable, frame[column])
     return frame
+
+
+# --- briefings and LLM usage (Phase 5) ------------------------------------------------------
+
+
+def latest_briefings(engine: Engine) -> pd.DataFrame:
+    """The newest briefing per location, grounded or not (flagged ones are shown, marked)."""
+    return _read(
+        engine,
+        "SELECT DISTINCT ON (b.location_id) b.briefing_id, b.location_id, d.name AS location, "
+        "b.as_of, b.trigger, b.trigger_ref, b.model, b.prompt_version, b.headline, b.summary, "
+        "b.confidence, b.most_reliable_model, b.reliable_reason, b.notable_risks, "
+        "b.grounding_passed, b.grounding_failures, b.fact_sheet, b.created_at, b.published_at "
+        "FROM gold.briefing b LEFT JOIN silver.dim_location d USING (location_id) "
+        "ORDER BY b.location_id, b.as_of DESC, b.created_at DESC",
+    )
+
+
+def briefing_counts(engine: Engine, days: int = 7) -> pd.DataFrame:
+    return _read(
+        engine,
+        "SELECT count(*) AS briefings, count(*) FILTER (WHERE grounding_passed) AS grounded, "
+        "count(*) FILTER (WHERE NOT grounding_passed) AS flagged, "
+        "count(published_at) AS published FROM gold.briefing "
+        "WHERE created_at >= now() - make_interval(days => :d)",
+        {"d": days},
+    )
+
+
+def llm_usage_by_outcome(engine: Engine, days: int = 7) -> pd.DataFrame:
+    """Calls, tokens, cost and latency per model and outcome. A cache hit or a skipped
+    (disabled) request is logged too, with zero tokens, so the cache hit rate is visible."""
+    return _read(
+        engine,
+        "SELECT model, outcome, count(*) AS calls, sum(input_tokens) AS input_tokens, "
+        "sum(output_tokens) AS output_tokens, sum(cost_usd) AS cost_usd, "
+        "avg(latency_ms) FILTER (WHERE outcome NOT IN ('cache_hit', 'disabled')) "
+        "AS avg_latency_ms FROM ops.llm_calls "
+        "WHERE called_at >= now() - make_interval(days => :d) GROUP BY 1, 2 ORDER BY 1, 2",
+        {"d": days},
+    )
+
+
+def llm_usage_daily(engine: Engine, days: int = 30) -> pd.DataFrame:
+    return _read(
+        engine,
+        "SELECT date_trunc('day', called_at) AS day, sum(cost_usd) AS cost_usd, "
+        "count(*) FILTER (WHERE outcome NOT IN ('cache_hit', 'disabled')) AS api_calls, "
+        "count(*) FILTER (WHERE outcome = 'cache_hit') AS cache_hits "
+        "FROM ops.llm_calls WHERE called_at >= now() - make_interval(days => :d) "
+        "GROUP BY 1 ORDER BY 1",
+        {"d": days},
+    )
+
+
+def recent_llm_calls(engine: Engine, limit: int = 50) -> pd.DataFrame:
+    return _read(
+        engine,
+        "SELECT called_at, purpose, model, prompt_version, attempt, outcome, input_tokens, "
+        "output_tokens, latency_ms, cost_usd, left(error, 200) AS error, request_id "
+        "FROM ops.llm_calls ORDER BY id DESC LIMIT :n",
+        {"n": limit},
+    )

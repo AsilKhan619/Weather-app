@@ -43,7 +43,8 @@ def _clean(engine: Engine) -> None:
             text(
                 "TRUNCATE silver.forecast, silver.observation, gold.forecast_verification, "
                 "gold.accuracy_daily, gold.alert, ops.gold_build_log, ops.job_state, "
-                "ops.quality_results, ops.ingestion_runs, ops.reconciliation_results"
+                "ops.quality_results, ops.ingestion_runs, ops.reconciliation_results, "
+                "gold.briefing, ops.llm_calls"
             )
         )
 
@@ -229,6 +230,8 @@ PAGES = [
     "views/forecast_vs_actual.py",
     "views/accuracy.py",
     "views/lineage.py",
+    "views/briefings.py",
+    "views/llm_usage.py",
 ]
 
 
@@ -293,3 +296,63 @@ def test_lineage_page_asks_for_an_event_and_reports_an_unknown_one(
 
     assert not at.exception, at.exception
     assert any("Not found" in e.value for e in at.error)
+
+
+# --- Phase 5 pages ------------------------------------------------------------------------
+
+
+def _briefed(engine: Engine) -> None:
+    """One grounded and one flagged briefing, from the deterministic fake client."""
+    from nimbus.common.config import load_llm_config
+    from nimbus.llm.briefings import generate_briefing
+    from nimbus.llm.client import FakeBriefingClient
+
+    as_of = _ts(FIRST + timedelta(days=DAYS - 3), 0)
+    for place, client in (
+        (PLACES[0], FakeBriefingClient()),
+        (PLACES[1], FakeBriefingClient(invent_number=True)),
+    ):
+        generate_briefing(
+            engine, place, as_of, client=client, config=load_llm_config(), producer=None,
+            model="fake-briefing-model",
+        )  # fmt: skip
+
+
+def test_briefing_queries(seeded: Engine) -> None:
+    _briefed(seeded)
+
+    latest = queries.latest_briefings(seeded)
+    counts = queries.briefing_counts(seeded).iloc[0]
+    usage = queries.llm_usage_by_outcome(seeded)
+
+    assert len(latest) == 2 and set(latest["grounding_passed"]) == {True, False}
+    assert (counts["briefings"], counts["grounded"], counts["flagged"]) == (2, 1, 1)
+    assert set(usage["outcome"]) == {"success", "grounding_failed"}
+    assert usage["cost_usd"].sum() == 0.0  # the fake model has no price
+
+
+def test_briefings_page_shows_a_briefing_and_its_fact_sheet(seeded: Engine, app_env: None) -> None:
+    _briefed(seeded)
+    at = _run("views/briefings.py")
+
+    assert not at.exception, at.exception
+    assert [m.label for m in at.metric] == [
+        "Briefings (7 d)", "Grounded", "Flagged (never published)", "Published",
+    ]  # fmt: skip
+    assert at.metric[2].value == "1"
+    assert at.expander and "Fact sheet" in at.expander[0].label
+
+    flagged = queries.latest_briefings(seeded)
+    flagged_name = flagged.loc[~flagged["grounding_passed"], "location"].iloc[0]
+    at.selectbox[0].select(flagged_name).run()
+    assert any("Flagged" in e.value for e in at.error)
+
+
+def test_llm_usage_page(seeded: Engine, app_env: None) -> None:
+    _briefed(seeded)
+    at = _run("views/llm_usage.py")
+
+    assert not at.exception, at.exception
+    labels = [m.label for m in at.metric]
+    assert labels[:3] == ["Cost (30 d, estimated)", "API calls", "Cache hit rate"]
+    assert at.metric[1].value == "2"
