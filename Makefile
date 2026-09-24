@@ -1,4 +1,4 @@
-.PHONY: up down logs demo backfill drain reconcile gold quality partitions alerts briefings briefing-consumer dashboard test test-integration lint typecheck eval trace replay sync migrate init-topics produce-forecasts produce-observations
+.PHONY: up down logs demo backfill drain reconcile gold quality partitions alerts briefings briefing-consumer ask dashboard test test-integration lint typecheck eval trace replay sync migrate init-topics produce-forecasts produce-observations
 
 sync:
 	uv sync --all-extras
@@ -35,6 +35,11 @@ briefings:
 # Briefings when alerts arrive: weather.alert.v1 -> weather.briefing.v1 (ARGS=--drain to catch up and exit)
 briefing-consumer:
 	uv run python -m nimbus.llm.alert_briefings $(ARGS)
+
+# Ask the agent one question: make ask Q="Which model is most accurate in London?"
+# Off unless LLM_ENABLED=true - the project runs at $0 (see CLAUDE.md); `make eval` exercises it.
+ask:
+	uv run python -m nimbus.jobs.ask "$(Q)"
 
 # Streamlit dashboard on http://localhost:8501 (needs `uv sync --extra dashboard`)
 dashboard:

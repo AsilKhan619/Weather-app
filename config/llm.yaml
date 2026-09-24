@@ -39,3 +39,23 @@ confidence:
 accuracy_window_days: 30
 # Alerts at the location detected within this many hours count as active.
 active_alert_hours: 24
+
+# The "Ask Nimbus" agent (brief section 11, ADR 0009). The model is a setting
+# (NIMBUS_AGENT_MODEL, default claude-sonnet-5). The project runs at $0, so it is only ever
+# exercised with the deterministic scripted client; these limits still apply to it.
+agent:
+  prompt_version: agent_v1
+  # Per request; the SDK's non-streaming default ceiling. A final answer is a few hundred tokens.
+  max_tokens: 16000
+  # Hard stops per question: model turns, and input + output tokens across all of them.
+  max_iterations: 8
+  token_budget: 60000
+  # run_sql: rows returned to the model, and a per-statement timeout tighter than the
+  # read-only role's own 10 s.
+  sql_row_limit: 200
+  sql_timeout_ms: 5000
+  # A tool result longer than this is cut (with a marker) before it reaches the model.
+  tool_output_chars: 8000
+  # sample_dlq: most messages it returns, and how much of each payload.
+  dlq_sample_limit: 20
+  dlq_payload_chars: 300

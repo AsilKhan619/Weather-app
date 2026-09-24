@@ -116,6 +116,18 @@ class ConfidenceConfig(BaseModel):
     medium_max_spread_k: float
 
 
+class AgentConfig(BaseModel):
+    prompt_version: str
+    max_tokens: int
+    max_iterations: int
+    token_budget: int
+    sql_row_limit: int
+    sql_timeout_ms: int
+    tool_output_chars: int
+    dlq_sample_limit: int
+    dlq_payload_chars: int
+
+
 class LLMConfig(BaseModel):
     prompt_version: str
     max_tokens: int
@@ -125,6 +137,7 @@ class LLMConfig(BaseModel):
     confidence: ConfidenceConfig
     accuracy_window_days: int
     active_alert_hours: int
+    agent: AgentConfig
 
 
 def load_llm_config(path: Path = CONFIG_DIR / "llm.yaml") -> LLMConfig:

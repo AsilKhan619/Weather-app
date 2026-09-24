@@ -210,3 +210,42 @@ llm_calls_table = sa.Table(
     sa.Column("request_id", sa.Text),
     schema="ops",
 )
+
+agent_sessions_table = sa.Table(
+    "agent_sessions",
+    metadata,
+    sa.Column("session_id", sa.Text, primary_key=True),
+    sa.Column("started_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+    sa.Column("purpose", sa.Text, nullable=False),
+    sa.Column("question", sa.Text, nullable=False),
+    sa.Column("answer", sa.Text),
+    sa.Column("stop_reason", sa.Text, nullable=False),
+    sa.Column("model", sa.Text, nullable=False),
+    sa.Column("prompt_version", sa.Text, nullable=False),
+    sa.Column("iterations", sa.SmallInteger, nullable=False),
+    sa.Column("tool_calls", sa.SmallInteger, nullable=False),
+    sa.Column("input_tokens", sa.Integer, nullable=False),
+    sa.Column("output_tokens", sa.Integer, nullable=False),
+    sa.Column("cost_usd", sa.Float, nullable=False),
+    sa.Column("latency_ms", sa.Integer, nullable=False),
+    sa.Column("trace", sa.JSON, nullable=False),
+    schema="ops",
+)
+
+replay_proposals_table = sa.Table(
+    "replay_proposals",
+    metadata,
+    sa.Column("id", sa.BigInteger, primary_key=True, autoincrement=True),
+    sa.Column("proposed_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+    sa.Column("proposed_by", sa.Text, nullable=False),
+    sa.Column("session_id", sa.Text),
+    sa.Column("consumer_group", sa.Text, nullable=False),
+    sa.Column("topic", sa.Text, nullable=False),
+    sa.Column("from_time", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("reason", sa.Text, nullable=False),
+    sa.Column("status", sa.Text, nullable=False, server_default="pending"),
+    sa.Column("decided_at", sa.DateTime(timezone=True)),
+    sa.Column("decided_by", sa.Text),
+    sa.Column("decision_note", sa.Text),
+    schema="ops",
+)
