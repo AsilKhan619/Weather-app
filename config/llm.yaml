@@ -54,8 +54,9 @@ agent:
   # read-only role's own 10 s.
   sql_row_limit: 200
   sql_timeout_ms: 5000
-  # A tool result longer than this is cut (with a marker) before it reaches the model.
-  tool_output_chars: 8000
+  # A tool result longer than this is cut (with a marker) before it reaches the model. It must
+  # hold describe_data's whole semantic layer (~8,000 characters; a unit test checks it fits).
+  tool_output_chars: 16000
   # sample_dlq: most messages it returns, and how much of each payload.
   dlq_sample_limit: 20
   dlq_payload_chars: 300

@@ -123,6 +123,17 @@ def test_the_semantic_layer_names_real_tables_and_example_queries_pass_the_guard
         validate_select(example["sql"])  # the integration suite also executes them
 
 
+def test_the_whole_semantic_layer_reaches_the_model_uncut() -> None:
+    """describe_data once outgrew the tool-output cap by 7 characters, which would have handed
+    the model a truncated string instead of the map of the data."""
+    content, is_error, _, _ = agent_loop.execute_tool(
+        MagicMock(config=CONFIG.agent), "describe_data", {}
+    )
+    assert not is_error
+    assert "result_truncated" not in json.loads(content)
+    assert len(content) < CONFIG.agent.tool_output_chars * 0.75  # room to grow
+
+
 # --- the loop, with stub tools ------------------------------------------------------------------
 
 
