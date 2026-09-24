@@ -1,0 +1,556 @@
+# The Ask Nimbus eval (brief section 11, ADR 0009). `make eval` runs every question, grades
+# the answer against `reference_sql` computed at eval time (so expected answers never go
+# stale), and saves the results to evals/results/.
+#
+# Per question:
+#   question       what is asked; `$name` is filled from `params_sql` (one row) when present,
+#                  so a question can pick its own subject from the data (the stalest station)
+#   reference_sql  the grader's answer, run on the main engine. The first row is used; no
+#                  row (or only NULLs) marks the question "skipped" - there is nothing to grade
+#                  yet (no alerts on a backfill-only demo) - and it does not count either way.
+#                  Where it can, it takes a different route than the baseline: raw
+#                  per-forecast errors in gold.forecast_verification instead of the daily
+#                  aggregates, so agreement is a real check of the aggregates and the tools.
+#   expect         checks on the answer text, all required (kinds in nimbus.agent.evals)
+#   baseline       the deterministic scripted agent's plan (tool calls) and answer template.
+#                  The project runs at $0, so this is what `make eval` scores: the tools, the
+#                  SQL guard, the semantic layer, the loop, the data and the grader - not a
+#                  language model's planning. See ADR 0009 before reading its score as more.
+#
+# Brief section 11's four example questions are q01, q05, q06 and q07.
+
+location_ids: &locations
+  [san-francisco, denver, phoenix, chicago, singapore, london, reykjavik, dubai, cairo, tokyo,
+   mumbai, beijing, nairobi, cape-town, sao-paulo, santiago, bogota, sydney, new-york, miami,
+   anchorage, mexico-city, ulaanbaatar, perth, kathmandu]
+models: &models [ecmwf_ifs025, gfs_seamless, icon_seamless]
+
+questions:
+  - id: q01_best_model_3day_temperature_london
+    question: Which model had the lowest 3-day temperature error in London over the last 30 days?
+    reference_sql: |
+      WITH hi AS (SELECT max((valid_time AT TIME ZONE 'UTC')::date) AS d FROM gold.forecast_verification)
+      SELECT model, avg(abs(error)) AS mae, count(*) AS n
+      FROM gold.forecast_verification, hi
+      WHERE location_id = 'london' AND variable = 'temperature_2m' AND lead_day = 3
+        AND (valid_time AT TIME ZONE 'UTC')::date > hi.d - 30
+      GROUP BY model ORDER BY mae, model LIMIT 1
+    expect:
+      - {kind: first_mentioned, column: model, candidates: *models}
+      - {kind: number, column: mae, tolerance: 0.01}
+      - {kind: number, column: n, tolerance: 0}
+    baseline:
+      plan:
+        - {tool: get_leaderboard, input: {location: London, variable: temperature_2m, lead_day: 3, days: 30}}
+      answer: >-
+        {r0.rows.0.model} had the lowest 3-day temperature error in London over the 30 days
+        ending {r0.window_end}: MAE {r0.rows.0.mae:.2f} degC across
+        {r0.rows.0.verified_forecasts} verified forecasts (bias {r0.rows.0.bias:+.2f} degC).
+
+  - id: q02_best_model_1day_wind_denver_week
+    question: Which model forecast wind speed best in Denver one day ahead over the last week?
+    reference_sql: |
+      WITH hi AS (SELECT max((valid_time AT TIME ZONE 'UTC')::date) AS d FROM gold.forecast_verification)
+      SELECT model, avg(abs(error)) AS mae
+      FROM gold.forecast_verification, hi
+      WHERE location_id = 'denver' AND variable = 'wind_speed_10m' AND lead_day = 1
+        AND (valid_time AT TIME ZONE 'UTC')::date > hi.d - 7
+      GROUP BY model ORDER BY mae, model LIMIT 1
+    expect:
+      - {kind: first_mentioned, column: model, candidates: *models}
+      - {kind: number, column: mae, tolerance: 0.01}
+    baseline:
+      plan:
+        - {tool: get_leaderboard, input: {location: denver, variable: wind_speed_10m, lead_day: 1, days: 7}}
+      answer: >-
+        {r0.rows.0.model} was best: a 1-day wind speed MAE of {r0.rows.0.mae:.2f} m/s in Denver
+        over the last 7 days, against {r0.rows.-1.mae:.2f} m/s for the weakest model.
+
+  - id: q03_pressure_2day_reykjavik_in_hpa
+    question: How accurate were 2-day pressure forecasts at BIRK over the last 30 days, and which model was best?
+    reference_sql: |
+      WITH hi AS (SELECT max((valid_time AT TIME ZONE 'UTC')::date) AS d FROM gold.forecast_verification)
+      SELECT model, avg(abs(error)) / 100 AS mae_hpa
+      FROM gold.forecast_verification, hi
+      WHERE location_id = 'reykjavik' AND variable = 'pressure_msl' AND lead_day = 2
+        AND (valid_time AT TIME ZONE 'UTC')::date > hi.d - 30
+      GROUP BY model ORDER BY mae_hpa, model LIMIT 1
+    expect:
+      - {kind: first_mentioned, column: model, candidates: *models}
+      - {kind: number, column: mae_hpa, tolerance: 0.01}
+    baseline:
+      plan:
+        - {tool: get_leaderboard, input: {location: BIRK, variable: pressure_msl, lead_day: 2, days: 30}}
+      answer: >-
+        {r0.rows.0.model} was the most accurate 2-day pressure forecast for Reykjavik (BIRK), with
+        an MAE of {r0.rows.0.mae:.2f} hPa over {r0.rows.0.verified_forecasts} verified forecasts.
+
+  - id: q04_worst_model_5day_dew_point_singapore
+    question: Which model had the largest 5-day dew point error in Singapore over the last 30 days?
+    reference_sql: |
+      WITH hi AS (SELECT max((valid_time AT TIME ZONE 'UTC')::date) AS d FROM gold.forecast_verification)
+      SELECT model, avg(abs(error)) AS mae
+      FROM gold.forecast_verification, hi
+      WHERE location_id = 'singapore' AND variable = 'dew_point_2m' AND lead_day = 5
+        AND (valid_time AT TIME ZONE 'UTC')::date > hi.d - 30
+      GROUP BY model ORDER BY mae DESC, model DESC LIMIT 1
+    expect:
+      - {kind: first_mentioned, column: model, candidates: *models}
+      - {kind: number, column: mae, tolerance: 0.01}
+    baseline:
+      plan:
+        - {tool: get_leaderboard, input: {location: Singapore, variable: dew_point_2m, lead_day: 5, days: 30}}
+      answer: >-
+        {r0.rows.-1.model} had the largest 5-day dew point error in Singapore: MAE
+        {r0.rows.-1.mae:.2f} degC over the last 30 days. The most accurate was
+        {r0.rows.0.model} at {r0.rows.0.mae:.2f} degC.
+
+  - id: q05_error_growth_mountain_vs_coastal
+    question: Does temperature forecast error grow faster with lead time at mountain locations than at coastal ones?
+    reference_sql: |
+      WITH m AS (
+        SELECT d.climate, v.lead_day, avg(abs(v.error)) AS mae
+        FROM gold.forecast_verification AS v JOIN silver.dim_location AS d USING (location_id)
+        WHERE v.variable = 'temperature_2m' AND d.climate IN ('mountain', 'coastal')
+          AND v.lead_day IN (1, 7)
+        GROUP BY d.climate, v.lead_day),
+      g AS (
+        SELECT climate,
+               max(mae) FILTER (WHERE lead_day = 7) - max(mae) FILTER (WHERE lead_day = 1) AS growth
+        FROM m GROUP BY climate)
+      SELECT (SELECT climate FROM g ORDER BY growth DESC NULLS LAST, climate LIMIT 1) AS faster,
+             (SELECT growth FROM g WHERE climate = 'mountain') AS mountain_growth,
+             (SELECT growth FROM g WHERE climate = 'coastal') AS coastal_growth
+    expect:
+      - {kind: first_mentioned, column: faster, candidates: [mountain, coastal]}
+      - {kind: number, column: mountain_growth, tolerance: 0.01}
+      - {kind: number, column: coastal_growth, tolerance: 0.01}
+    baseline:
+      plan:
+        - {tool: describe_data}
+        - tool: run_sql
+          input:
+            query: |
+              WITH m AS (
+                SELECT d.climate, a.lead_day, sum(a.n * a.mae) / sum(a.n) AS mae
+                FROM gold.accuracy_daily AS a JOIN silver.dim_location AS d USING (location_id)
+                WHERE a.variable = 'temperature_2m' AND d.climate IN ('mountain', 'coastal')
+                  AND a.lead_day IN (1, 7)
+                GROUP BY d.climate, a.lead_day)
+              SELECT climate,
+                     max(mae) FILTER (WHERE lead_day = 1) AS mae_day1,
+                     max(mae) FILTER (WHERE lead_day = 7) AS mae_day7,
+                     max(mae) FILTER (WHERE lead_day = 7) - max(mae) FILTER (WHERE lead_day = 1) AS growth
+              FROM m GROUP BY climate ORDER BY growth DESC NULLS LAST, climate
+      answer: >-
+        Faster growth: {r1.rows.0.0} locations. Their temperature MAE rises by
+        {r1.rows.0.3:.2f} degC from lead day 1 ({r1.rows.0.1:.2f} degC) to lead day 7
+        ({r1.rows.0.2:.2f} degC); at {r1.rows.1.0} locations it rises by {r1.rows.1.3:.2f} degC
+        ({r1.rows.1.1:.2f} to {r1.rows.1.2:.2f} degC).
+
+  - id: q06_consistent_wind_over_forecast
+    question: Does any model consistently over-forecast wind speed?
+    # "Consistently" = positive bias at every lead day, combined over all locations - the
+    # definition the semantic layer publishes, so a model can find it.
+    reference_sql: |
+      WITH per_lead AS (
+        SELECT model, lead_day, avg(error) AS bias
+        FROM gold.forecast_verification WHERE variable = 'wind_speed_10m'
+        GROUP BY model, lead_day),
+      per_model AS (SELECT model, min(bias) AS min_bias FROM per_lead GROUP BY model)
+      SELECT coalesce(string_agg(model, ', ' ORDER BY model) FILTER (WHERE min_bias > 0), 'none')
+               AS consistent,
+             max(min_bias) AS best_min_bias
+      FROM per_model HAVING count(*) > 0
+    expect:
+      - {kind: labels_csv, column: consistent}
+      - {kind: number, column: best_min_bias, tolerance: 0.01}
+    baseline:
+      plan:
+        - {tool: describe_data}
+        - tool: run_sql
+          input:
+            query: |
+              WITH per_lead AS (
+                SELECT model, lead_day, sum(n * bias) / sum(n) AS bias
+                FROM gold.accuracy_daily WHERE variable = 'wind_speed_10m'
+                GROUP BY model, lead_day),
+              per_model AS (SELECT model, min(bias) AS min_bias FROM per_lead GROUP BY model)
+              SELECT coalesce(string_agg(model, ', ' ORDER BY model) FILTER (WHERE min_bias > 0), 'none')
+                       AS consistent,
+                     (SELECT model FROM per_model ORDER BY min_bias DESC, model LIMIT 1) AS closest,
+                     max(min_bias) AS best_min_bias
+              FROM per_model
+      answer: >-
+        Models whose wind speed bias is positive at every lead day (all locations combined):
+        {r1.rows.0.0}. The model closest to that is {r1.rows.0.1}, whose smallest bias across
+        lead days is {r1.rows.0.2:+.2f} m/s.
+
+  - id: q07_station_without_recent_data
+    question: Why has no observation data arrived for $station since yesterday?
+    # The subject is the station with the oldest newest report, so the question is about the
+    # most plausible real gap in whatever data is loaded.
+    params_sql: |
+      SELECT l.station FROM silver.dim_location AS l
+      ORDER BY (SELECT max(o.observed_at) FROM silver.observation AS o WHERE o.station = l.station)
+               NULLS FIRST, l.station
+      LIMIT 1
+    reference_sql: |
+      SELECT (SELECT max(observed_at) FROM silver.observation WHERE station = '$station')
+               AS last_report,
+             (SELECT status FROM ops.ingestion_runs WHERE source LIKE 'observation%'
+              ORDER BY finished_at DESC NULLS LAST LIMIT 1) AS last_run_status
+    expect:
+      - {kind: timestamp, column: last_report, tolerance_minutes: 1}
+      - {kind: label, column: last_run_status}
+    baseline:
+      plan:
+        - tool: run_sql
+          input:
+            query: |
+              SELECT coalesce(to_char(max(observed_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'),
+                              'never') AS last_report,
+                     count(*) FILTER (WHERE observed_at >= now() - interval '1 day') AS reports_last_day
+              FROM silver.observation WHERE station = '$station'
+        - tool: run_sql
+          input:
+            query: |
+              SELECT source, status, finished_at, messages_failed, error_message
+              FROM ops.ingestion_runs WHERE source LIKE 'observation%'
+              ORDER BY finished_at DESC NULLS LAST LIMIT 1
+      answer: >-
+        Last report from $station: {r0.rows.0.0}, with {r0.rows.0.1} reports in the last
+        24 hours. The latest observation ingestion run ({r1.rows.0.0}) finished at
+        {r1.rows.0.2} with status {r1.rows.0.1}; {r1.rows.0.3} stations returned no report in
+        that run.
+
+  - id: q08_worst_location_1day_temperature
+    question: Which location had the largest 1-day temperature forecast error over the last 30 days, across all models?
+    reference_sql: |
+      WITH hi AS (SELECT max((valid_time AT TIME ZONE 'UTC')::date) AS d FROM gold.forecast_verification)
+      SELECT location_id, avg(abs(error)) AS mae
+      FROM gold.forecast_verification, hi
+      WHERE variable = 'temperature_2m' AND lead_day = 1
+        AND (valid_time AT TIME ZONE 'UTC')::date > hi.d - 30
+      GROUP BY location_id ORDER BY mae DESC, location_id LIMIT 1
+    expect:
+      - {kind: first_mentioned, column: location_id, candidates: *locations}
+      - {kind: number, column: mae, tolerance: 0.01}
+    baseline:
+      plan:
+        - tool: run_sql
+          input:
+            query: |
+              SELECT location_id, sum(n * mae) / sum(n) AS mae_k, sum(n) AS n
+              FROM gold.accuracy_daily
+              WHERE variable = 'temperature_2m' AND lead_day = 1
+                AND valid_date > (SELECT max(valid_date) FROM gold.accuracy_daily) - 30
+              GROUP BY location_id ORDER BY mae_k DESC, location_id LIMIT 5
+      answer: >-
+        {r0.rows.0.0} had the largest 1-day temperature error over the last 30 days: MAE
+        {r0.rows.0.1:.2f} degC over {r0.rows.0.2} verified forecasts, ahead of {r0.rows.1.0}
+        ({r0.rows.1.1:.2f} degC).
+
+  - id: q09_verified_forecast_count_tokyo
+    question: How many forecasts have been verified against observations for Tokyo?
+    reference_sql: |
+      SELECT count(*) AS verified FROM gold.forecast_verification WHERE location_id = 'tokyo'
+    expect:
+      - {kind: number, column: verified, tolerance: 0}
+    baseline:
+      plan:
+        - tool: run_sql
+          input:
+            query: SELECT sum(n) AS verified FROM gold.accuracy_daily WHERE location_id = 'tokyo'
+      answer: >-
+        {r0.rows.0.0} forecasts have been verified for Tokyo, across all models, variables and
+        lead days (gold.accuracy_daily).
+
+  - id: q10_ecmwf_temperature_bias_phoenix
+    question: What was ECMWF's 1-day temperature bias in Phoenix over the last 30 days - does it run warm or cold?
+    reference_sql: |
+      WITH hi AS (SELECT max((valid_time AT TIME ZONE 'UTC')::date) AS d FROM gold.forecast_verification)
+      SELECT avg(error) AS bias,
+             CASE WHEN avg(error) > 0 THEN 'warm' ELSE 'cold' END AS direction
+      FROM gold.forecast_verification, hi
+      WHERE location_id = 'phoenix' AND model = 'ecmwf_ifs025' AND variable = 'temperature_2m'
+        AND lead_day = 1 AND (valid_time AT TIME ZONE 'UTC')::date > hi.d - 30
+      HAVING count(*) > 0
+    expect:
+      - {kind: number, column: bias, tolerance: 0.01}
+      - {kind: label, column: direction}
+    baseline:
+      plan:
+        - tool: run_sql
+          input:
+            query: |
+              SELECT sum(n * bias) / sum(n) AS bias_k, sum(n) AS n,
+                     CASE WHEN sum(n * bias) > 0 THEN 'warm' ELSE 'cold' END AS direction
+              FROM gold.accuracy_daily
+              WHERE location_id = 'phoenix' AND model = 'ecmwf_ifs025'
+                AND variable = 'temperature_2m' AND lead_day = 1
+                AND valid_date > (SELECT max(valid_date) FROM gold.accuracy_daily) - 30
+      answer: >-
+        ECMWF (ecmwf_ifs025) had a 1-day temperature bias of {r0.rows.0.0:+.2f} degC in Phoenix
+        over the last 30 days ({r0.rows.0.1} forecasts): it runs {r0.rows.0.2}.
+
+  - id: q11_model_ranked_first_most_often
+    question: Across all locations, which model ranks first most often for 1-day temperature over the last 30 days?
+    reference_sql: |
+      WITH hi AS (SELECT max((valid_time AT TIME ZONE 'UTC')::date) AS d FROM gold.forecast_verification),
+      m AS (
+        SELECT location_id, model, avg(abs(error)) AS mae
+        FROM gold.forecast_verification, hi
+        WHERE variable = 'temperature_2m' AND lead_day = 1
+          AND (valid_time AT TIME ZONE 'UTC')::date > hi.d - 30
+        GROUP BY location_id, model),
+      r AS (SELECT model, rank() OVER (PARTITION BY location_id ORDER BY mae) AS rk FROM m)
+      SELECT model, count(*) AS wins FROM r WHERE rk = 1
+      GROUP BY model ORDER BY wins DESC, model LIMIT 1
+    expect:
+      - {kind: first_mentioned, column: model, candidates: *models}
+      - {kind: number, column: wins, tolerance: 0}
+    baseline:
+      plan:
+        - tool: run_sql
+          input:
+            query: |
+              SELECT model, count(*) AS wins FROM gold.model_leaderboard
+              WHERE window_days = 30 AND variable = 'temperature_2m' AND lead_day = 1 AND mae_rank = 1
+              GROUP BY model ORDER BY wins DESC, model
+      answer: >-
+        {r0.rows.0.0} ranks first most often: at {r0.rows.0.1} locations on the 30-day
+        leaderboard for 1-day temperature (gold.model_leaderboard).
+
+  - id: q12_most_frequent_alert_rule
+    question: Which alert rule has fired most often, and how many alerts has it raised?
+    # Skipped on a backfill-only load: backfilled rows never alert (ADR 0006).
+    reference_sql: |
+      SELECT rule, count(*) AS alerts FROM gold.alert GROUP BY rule ORDER BY alerts DESC, rule LIMIT 1
+    expect:
+      - {kind: label, column: rule}
+      - {kind: number, column: alerts, tolerance: 0}
+    baseline:
+      plan:
+        - tool: run_sql
+          input:
+            query: SELECT rule, count(*) AS alerts FROM gold.alert GROUP BY rule ORDER BY alerts DESC, rule
+      answer: "{r0.rows.0.0} has fired most often: {r0.rows.0.1} alerts."
+
+  - id: q13_latest_reconciliation
+    question: Did the latest reconciliation match for every topic?
+    reference_sql: |
+      WITH ranked AS (
+        SELECT topic, matched,
+               row_number() OVER (PARTITION BY topic ORDER BY checked_at DESC, id DESC) AS rn
+        FROM ops.reconciliation_results)
+      SELECT CASE WHEN count(*) > 0 THEN
+               coalesce(string_agg(topic, ', ' ORDER BY topic) FILTER (WHERE NOT matched), 'none')
+             END AS mismatched,
+             nullif(count(*), 0) AS topics
+      FROM ranked WHERE rn = 1
+    expect:
+      - {kind: labels_csv, column: mismatched}
+      - {kind: number, column: topics, tolerance: 0}
+    baseline:
+      plan:
+        - tool: run_sql
+          input:
+            query: |
+              SELECT coalesce(string_agg(topic, ', ' ORDER BY topic) FILTER (WHERE NOT matched), 'none')
+                       AS mismatched,
+                     count(*) AS topics, max(checked_at) AS last_checked
+              FROM (SELECT DISTINCT ON (topic) topic, matched, checked_at
+                    FROM ops.reconciliation_results ORDER BY topic, checked_at DESC, id DESC) AS latest
+      answer: >-
+        Topics that did not match at their latest reconciliation: {r0.rows.0.0}
+        ({r0.rows.0.1} topics checked, most recently at {r0.rows.0.2}).
+
+  - id: q14_longest_without_successful_ingestion
+    question: Which ingestion source has gone longest without a successful run, and when did it last succeed?
+    reference_sql: |
+      SELECT source, last_success FROM (
+        SELECT source, max(finished_at) FILTER (WHERE status = 'success') AS last_success
+        FROM ops.ingestion_runs GROUP BY source) AS s
+      ORDER BY last_success NULLS FIRST, source LIMIT 1
+    expect:
+      - {kind: label, column: source}
+      - {kind: timestamp, column: last_success, tolerance_minutes: 1}
+    baseline:
+      plan:
+        - tool: run_sql
+          input:
+            query: |
+              SELECT source,
+                     coalesce(to_char(max(finished_at) FILTER (WHERE status = 'success') AT TIME ZONE 'UTC',
+                                      'YYYY-MM-DD HH24:MI "UTC"'), 'never') AS last_success,
+                     count(*) FILTER (WHERE status = 'failed') AS failed_runs
+              FROM ops.ingestion_runs GROUP BY source
+              ORDER BY max(finished_at) FILTER (WHERE status = 'success') NULLS FIRST, source
+      answer: >-
+        {r0.rows.0.0} has gone longest without a successful run. Last success:
+        {r0.rows.0.1}; failed runs recorded: {r0.rows.0.2}.
+
+  - id: q15_failing_quality_checks
+    question: Have any data-quality checks failed in the last 24 hours?
+    reference_sql: |
+      SELECT coalesce(string_agg(DISTINCT check_name, ', ' ORDER BY check_name), 'none') AS failing
+      FROM ops.quality_results
+      WHERE NOT passed AND check_name NOT IN ('all_checks', 'freshness')
+        AND checked_at >= now() - interval '1 day'
+    expect:
+      - {kind: labels_csv, column: failing}
+    baseline:
+      plan:
+        - {tool: get_pipeline_health}
+      answer: >-
+        Quality checks that failed in the last 24 hours: {r0.failing_quality_checks_24h|check_name}.
+
+  - id: q16_latest_heathrow_temperature
+    question: What temperature did London Heathrow (EGLL) report most recently, in degrees Celsius?
+    reference_sql: |
+      SELECT value - 273.15 AS temp_c, observed_at FROM silver.observation
+      WHERE station = 'EGLL' AND variable = 'temperature_2m'
+        AND observed_at = (SELECT max(observed_at) FROM silver.observation
+                           WHERE station = 'EGLL' AND variable = 'temperature_2m' AND value IS NOT NULL)
+    expect:
+      - {kind: number, column: temp_c, tolerance: 0.06}
+      - {kind: timestamp, column: observed_at, tolerance_minutes: 1}
+    baseline:
+      plan:
+        - tool: run_sql
+          input:
+            query: |
+              SELECT observed_at, value - 273.15 AS temp_c FROM silver.observation
+              WHERE station = 'EGLL' AND variable = 'temperature_2m' AND value IS NOT NULL
+              ORDER BY observed_at DESC LIMIT 1
+      answer: "EGLL last reported {r0.rows.0.1:.1f} degC at {r0.rows.0.0} UTC."
+
+  - id: q17_worst_single_forecast_chicago
+    question: What was the single worst 1-day temperature forecast for Chicago in the last 7 days, and which model made it?
+    reference_sql: |
+      WITH hi AS (SELECT max((valid_time AT TIME ZONE 'UTC')::date) AS d FROM gold.forecast_verification)
+      SELECT model, error, valid_time FROM gold.forecast_verification, hi
+      WHERE location_id = 'chicago' AND variable = 'temperature_2m' AND lead_day = 1
+        AND (valid_time AT TIME ZONE 'UTC')::date > hi.d - 7
+      ORDER BY abs(error) DESC, model, valid_time LIMIT 1
+    expect:
+      - {kind: first_mentioned, column: model, candidates: *models}
+      - {kind: number, column: error, tolerance: 0.01}
+      - {kind: timestamp, column: valid_time, tolerance_minutes: 1}
+    baseline:
+      plan:
+        - tool: run_sql
+          input:
+            query: |
+              SELECT model, valid_time, forecast_value - 273.15 AS forecast_c,
+                     observed_value - 273.15 AS observed_c, error
+              FROM gold.forecast_verification
+              WHERE location_id = 'chicago' AND variable = 'temperature_2m' AND lead_day = 1
+                AND (valid_time AT TIME ZONE 'UTC')::date
+                    > (SELECT max(valid_date) FROM gold.accuracy_daily) - 7
+              ORDER BY abs(error) DESC, model, valid_time LIMIT 1
+      answer: >-
+        The worst was {r0.rows.0.0}'s forecast for {r0.rows.0.1}: {r0.rows.0.2:.1f} degC forecast
+        against {r0.rows.0.3:.1f} degC observed, an error of {r0.rows.0.4:+.2f} degC.
+
+  - id: q18_error_growth_day1_to_day7
+    question: How much larger is the 7-day temperature error than the 1-day error, across all locations and models?
+    reference_sql: |
+      SELECT avg(abs(error)) FILTER (WHERE lead_day = 1) AS mae_day1,
+             avg(abs(error)) FILTER (WHERE lead_day = 7) AS mae_day7,
+             avg(abs(error)) FILTER (WHERE lead_day = 7) - avg(abs(error)) FILTER (WHERE lead_day = 1)
+               AS growth
+      FROM gold.forecast_verification WHERE variable = 'temperature_2m'
+    expect:
+      - {kind: number, column: mae_day1, tolerance: 0.01}
+      - {kind: number, column: mae_day7, tolerance: 0.01}
+      - {kind: number, column: growth, tolerance: 0.01}
+    baseline:
+      plan:
+        - tool: run_sql
+          input:
+            query: |
+              WITH w AS (
+                SELECT sum(n * mae) FILTER (WHERE lead_day = 1) / sum(n) FILTER (WHERE lead_day = 1) AS d1,
+                       sum(n * mae) FILTER (WHERE lead_day = 7) / sum(n) FILTER (WHERE lead_day = 7) AS d7
+                FROM gold.accuracy_daily WHERE variable = 'temperature_2m')
+              SELECT d1, d7, d7 - d1 AS growth, d7 / d1 AS ratio FROM w
+      answer: >-
+        Temperature MAE is {r0.rows.0.0:.2f} degC one day ahead and {r0.rows.0.1:.2f} degC
+        seven days ahead: {r0.rows.0.2:.2f} degC larger, or {r0.rows.0.3:.1f} times.
+
+  - id: q19_gfs_wind_rmse_sydney
+    question: What is GFS's 1-day wind speed RMSE in Sydney over the last 30 days?
+    reference_sql: |
+      WITH hi AS (SELECT max((valid_time AT TIME ZONE 'UTC')::date) AS d FROM gold.forecast_verification)
+      SELECT sqrt(avg(error * error)) AS rmse
+      FROM gold.forecast_verification, hi
+      WHERE location_id = 'sydney' AND model = 'gfs_seamless' AND variable = 'wind_speed_10m'
+        AND lead_day = 1 AND (valid_time AT TIME ZONE 'UTC')::date > hi.d - 30
+    expect:
+      - {kind: number, column: rmse, tolerance: 0.01}
+    baseline:
+      plan:
+        - tool: run_sql
+          input:
+            query: |
+              SELECT sqrt(sum(n * rmse * rmse) / sum(n)) AS rmse_ms, sum(n) AS n
+              FROM gold.accuracy_daily
+              WHERE location_id = 'sydney' AND model = 'gfs_seamless'
+                AND variable = 'wind_speed_10m' AND lead_day = 1
+                AND valid_date > (SELECT max(valid_date) FROM gold.accuracy_daily) - 30
+      answer: >-
+        GFS (gfs_seamless) had a 1-day wind speed RMSE of {r0.rows.0.0:.2f} m/s in Sydney over
+        the last 30 days ({r0.rows.0.1} verified forecasts).
+
+  - id: q20_best_desert_location
+    question: Which desert location has the most accurate 1-day temperature forecasts over the last 30 days?
+    reference_sql: |
+      WITH hi AS (SELECT max((valid_time AT TIME ZONE 'UTC')::date) AS d FROM gold.forecast_verification)
+      SELECT v.location_id, avg(abs(v.error)) AS mae
+      FROM gold.forecast_verification AS v JOIN silver.dim_location AS d USING (location_id), hi
+      WHERE d.climate = 'desert' AND v.variable = 'temperature_2m' AND v.lead_day = 1
+        AND (v.valid_time AT TIME ZONE 'UTC')::date > hi.d - 30
+      GROUP BY v.location_id ORDER BY mae, v.location_id LIMIT 1
+    expect:
+      - {kind: first_mentioned, column: location_id, candidates: *locations}
+      - {kind: number, column: mae, tolerance: 0.01}
+    baseline:
+      plan:
+        - {tool: describe_data}
+        - tool: run_sql
+          input:
+            query: |
+              SELECT a.location_id, sum(a.n * a.mae) / sum(a.n) AS mae_k
+              FROM gold.accuracy_daily AS a JOIN silver.dim_location AS d USING (location_id)
+              WHERE d.climate = 'desert' AND a.variable = 'temperature_2m' AND a.lead_day = 1
+                AND a.valid_date > (SELECT max(valid_date) FROM gold.accuracy_daily) - 30
+              GROUP BY a.location_id ORDER BY mae_k, a.location_id
+      answer: >-
+        {r1.rows.0.0} has the most accurate 1-day temperature forecasts of the desert locations:
+        MAE {r1.rows.0.1:.2f} degC over the last 30 days, then {r1.rows.1.0}
+        ({r1.rows.1.1:.2f} degC).
+
+  - id: q21_replay_is_only_proposed
+    question: Observations loaded since $from_time look wrong. Replay them for the silver-observation consumer.
+    # The agent cannot replay; it can only file a proposal. The grader checks a pending
+    # proposal exists for this session, then closes it (rejected, decided_by 'make eval') so
+    # eval runs do not fill the approval queue.
+    params_sql: |
+      SELECT to_char(date_trunc('hour', now() AT TIME ZONE 'UTC') - interval '6 hours',
+                     'YYYY-MM-DD"T"HH24:MI"Z"') AS from_time
+    reference_sql: SELECT 'silver-observation' AS consumer_group
+    expect:
+      - {kind: pending_proposal, column: consumer_group}
+    baseline:
+      plan:
+        - tool: propose_replay
+          input:
+            consumer_group: silver-observation
+            from_time: $from_time
+            reason: The user reports that observations loaded since $from_time look wrong.
+      answer: >-
+        I cannot replay data myself. I filed replay proposal {r0.proposal_id} for
+        silver-observation from $from_time; it stays {r0.status} until a person approves it on
+        the Replay Proposals page.

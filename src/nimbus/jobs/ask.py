@@ -8,7 +8,7 @@ import argparse
 import json
 import sys
 
-from nimbus.agent.llm import AnthropicAgentClient
+from nimbus.agent.llm import client_from_settings
 from nimbus.agent.loop import AgentResult, run_agent
 from nimbus.common.config import load_llm_config
 from nimbus.common.db import make_engine
@@ -40,7 +40,9 @@ def main() -> None:
     settings = get_settings()
     configure_logging(settings.log_level)
 
-    if not settings.llm_enabled:
+    config = load_llm_config()
+    client = client_from_settings(settings, config.agent)
+    if client is None:
         print(
             "The agent is off: LLM_ENABLED=false (the default - this project runs at $0, and a "
             "language model is a paid API). Nothing was sent anywhere. `make eval` exercises the "
@@ -48,10 +50,6 @@ def main() -> None:
         )
         sys.exit(0)
 
-    config = load_llm_config()
-    client = AnthropicAgentClient(
-        settings.nimbus_agent_model, config.agent, settings.anthropic_api_key or None
-    )
     result = run_agent(
         args.question,
         client,

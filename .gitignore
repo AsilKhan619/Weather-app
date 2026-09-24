@@ -20,6 +20,9 @@ uv.lock.bak
 data/lake/
 *.parquet
 
+# Eval runs: one JSON per run stays local; evals/results/history.jsonl is the tracked record
+evals/results/*.json
+
 # Airflow
 orchestration/airflow/logs/
 orchestration/airflow/*.db

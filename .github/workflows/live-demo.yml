@@ -34,7 +34,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --extra ingestion --extra dashboard --extra llm
+        run: uv sync --extra ingestion --extra dashboard --extra llm --extra sql
 
       - name: Configure (the documented quickstart step)
         run: cp .env.example .env
@@ -93,6 +93,18 @@ jobs:
               make --no-print-directory trace SAMPLE=$kind
               echo '```'
             done
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Agent eval on the real data (scripted baseline - no LLM, $0)
+        shell: bash  # -o pipefail, so a score under the target fails the step through tee
+        run: |
+          {
+            echo "## make eval on the real data"
+            echo "Deterministic scripted agent through the real tools, SQL guard and read-only"
+            echo "role; answers graded against reference SQL computed now (ADR 0009)."
+            echo '```'
+            make --no-print-directory eval
+            echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Dashboard pages against real data

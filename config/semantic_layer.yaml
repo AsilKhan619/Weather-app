@@ -149,6 +149,8 @@ metrics:
   bias_over_a_window: sum(n * bias) / sum(n) (positive = over-forecasts)
   rmse_over_a_window: sqrt(sum(n * rmse * rmse) / sum(n))
   last_n_days: valid_date > (SELECT max(valid_date) FROM gold.accuracy_daily) - N
+  consistently_over_forecasts: a model's bias, combined over all locations, is positive at every lead day 1-7
+  error_growth_with_lead_time: MAE at lead_day 7 minus MAE at lead_day 1
 
 example_queries:
   - question: Which model had the lowest 1-day temperature error in London over the last 30 days?

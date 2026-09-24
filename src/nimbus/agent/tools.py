@@ -70,6 +70,8 @@ def clean_text(value: Any, limit: int) -> str:
 def _jsonable(value: Any) -> Any:
     if isinstance(value, Decimal):
         return float(value)
+    if isinstance(value, datetime) and value.tzinfo is not None:
+        return value.astimezone(UTC).isoformat()  # the semantic layer promises UTC
     if isinstance(value, datetime | date):
         return value.isoformat()
     if isinstance(value, float):

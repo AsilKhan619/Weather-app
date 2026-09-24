@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from nimbus.common.config import AgentConfig
+from nimbus.common.settings import Settings
 from nimbus.llm.client import LLMUnavailableError, LLMUsage
 
 
@@ -78,13 +79,23 @@ class AnthropicAgentClient:
         )
 
 
+def client_from_settings(settings: Settings, config: AgentConfig) -> AgentLLM | None:
+    """The real agent client, or None while LLM_ENABLED=false - the default, and the project's
+    standing decision: it runs at $0, and a language model is a paid API."""
+    if not settings.llm_enabled:
+        return None
+    return AnthropicAgentClient(
+        settings.nimbus_agent_model, config, settings.anthropic_api_key or None
+    )
+
+
 @dataclass(frozen=True)
 class PlannedCall:
     tool: str
     input: dict[str, Any]
 
 
-_PLACEHOLDER = re.compile(r"\{r(\d+)((?:\.[\w-]+)*)(?::([^}]*))?\}")
+_PLACEHOLDER = re.compile(r"\{r(\d+)((?:\.[\w-]+)*)(?:\|(\w+))?(?::([^}]*))?\}")
 
 
 def _lookup(value: Any, path: str) -> Any:
@@ -94,11 +105,14 @@ def _lookup(value: Any, path: str) -> Any:
 
 
 def render_answer(template: str, results: list[Any]) -> str:
-    """Fill `{r0.rows.0.model}` / `{r1.rows.0.1:.2f}` from tool results (r0 = first call)."""
+    """Fill `{r0.rows.0.model}` / `{r1.rows.0.1:.2f}` from tool results (r0 = first call);
+    `{r0.stale_sources|subject}` joins one field of a list of records ("none" if empty)."""
 
     def replace(match: re.Match[str]) -> str:
         value = _lookup(results[int(match.group(1))], match.group(2))
-        spec = match.group(3)
+        if (key := match.group(3)) is not None:
+            return ", ".join(str(item[key]) for item in value) or "none"
+        spec = match.group(4)
         return format(value, spec) if spec else str(value)
 
     return _PLACEHOLDER.sub(replace, template)

@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from nimbus.agent import llm as agent_llm
 from nimbus.agent import loop as agent_loop
 from nimbus.agent.llm import (
     AgentTurn,
@@ -329,9 +330,17 @@ def test_the_agent_cli_refuses_to_call_a_paid_model_by_default(
     monkeypatch.setattr(sys, "argv", ["ask", "Which model is best?"])
     monkeypatch.setattr(ask, "get_settings", lambda: settings_module.Settings(_env_file=None))
     built = MagicMock(side_effect=AssertionError("a paid client was built"))
-    monkeypatch.setattr(ask, "AnthropicAgentClient", built)
+    monkeypatch.setattr(agent_llm, "AnthropicAgentClient", built)
 
     with pytest.raises(SystemExit) as exit_info:
         ask.main()
     assert exit_info.value.code == 0
     assert "LLM_ENABLED=false" in capsys.readouterr().out
+
+
+def test_no_real_client_exists_unless_the_llm_is_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    built = MagicMock(side_effect=AssertionError("a paid client was built"))
+    monkeypatch.setattr(agent_llm, "AnthropicAgentClient", built)
+    monkeypatch.delenv("LLM_ENABLED", raising=False)
+
+    assert agent_llm.client_from_settings(Settings(_env_file=None), CONFIG.agent) is None
