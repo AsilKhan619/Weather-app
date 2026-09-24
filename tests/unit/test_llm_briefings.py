@@ -369,3 +369,23 @@ def test_real_client_maps_api_failures_to_unavailable(monkeypatch: pytest.Monkey
 
     with pytest.raises(LLMUnavailableError, match="APITimeoutError"):
         client.generate("s", "u")
+
+
+# --- the $0 guarantee ---------------------------------------------------------------------
+
+
+def test_default_settings_never_build_a_paid_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The project must cost nothing unless the user deliberately opts in: with the defaults,
+    the documented .env.example, or even a key present but LLM_ENABLED unset, no real (paid)
+    client is ever constructed - briefings are skipped and logged as `disabled`."""
+    from pathlib import Path
+
+    from nimbus.common.settings import Settings
+    from nimbus.jobs.generate_briefings import make_briefing_client
+
+    for name in ("LLM_ENABLED", "ANTHROPIC_API_KEY"):
+        monkeypatch.delenv(name, raising=False)  # judge the files, not this shell
+    example = Path(__file__).resolve().parents[2] / ".env.example"
+    assert make_briefing_client(Settings(_env_file=None)) is None
+    assert make_briefing_client(Settings(_env_file=example)) is None
+    assert make_briefing_client(Settings(_env_file=None, anthropic_api_key="sk-present")) is None

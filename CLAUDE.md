@@ -41,6 +41,7 @@ Run `uv sync` once after cloning to install dependencies (uv manages the virtual
 
 ## Conventions
 
+- **$0 project - avoid all costs** (user's standing decision, 2026-09-24). Do not enable, add or run anything that costs money: keep `LLM_ENABLED=false`, add no API keys and make no real Claude API calls (build and test LLM features against the fake client only), add no paid services, SaaS tiers or cloud resources, and keep the repo public (Actions minutes are free only for public repos). If a task truly needs something paid, stop and ask.
 - Python 3.12+, full type hints, ruff + mypy clean, pre-commit enforced.
 - Pure, unit-tested transform functions in `src/nimbus/transform/`; no `iterrows`, explicit dtypes, categoricals for low-cardinality columns.
 - Pydantic v2 models for every Kafka event type (`src/nimbus/common/`); pandera schemas for every DataFrame load (`src/nimbus/quality/`).

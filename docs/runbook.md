@@ -345,8 +345,10 @@ change: bronze holds the untouched events.
 
 ## 14. LLM briefings (`make briefings`)
 
-Off by default. To turn on: set a **billing cap in the Anthropic console first**, then in `.env`
-set `ANTHROPIC_API_KEY=...` and `LLM_ENABLED=true`, and `uv sync --extra llm`.
+Off by default, and **staying off: the project is kept at $0 by decision.** Everything below except
+`--dry-run` is for a future where that changes. Turning it on would mean a **billing cap in the
+Anthropic console first**, then `ANTHROPIC_API_KEY=...` and `LLM_ENABLED=true` in `.env`, and
+`uv sync --extra llm`.
 
 ```bash
 make briefings ARGS=--dry-run                           # print the fact sheets; no API call

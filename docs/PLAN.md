@@ -5,7 +5,7 @@
 
 ## Ground rules (every phase)
 
-- No cost: every data source, service, and library used is free/open-source and self-hosted, except the Anthropic API, which stays opt-in (`LLM_ENABLED=false` by default) and is never enabled without the user explicitly adding a key.
+- No cost: every data source, service, and library used is free/open-source and self-hosted. **The user has decided the project stays at $0 for now (2026-09-24):** the Anthropic API stays off (`LLM_ENABLED=false`), no key is added, and LLM features are built and tested only against the deterministic fake client. A unit test asserts that default settings never construct a paid client.
 - `make lint`, `make typecheck`, `make test` must pass before a phase is called done.
 - Every significant design decision gets an ADR in `docs/decisions/`.
 - Each phase ends with a summary + talking points appended to `docs/interview-notes.md`, then stops for a fresh session.
@@ -118,7 +118,7 @@ Design: [ADR 0008](decisions/0008-phase5-grounded-briefings.md). Built and teste
 - [x] Versioned prompt file (`src/nimbus/llm/prompts/briefing_v1.md`)
 - [x] Dashboard: Briefings, LLM Usage pages
 - [x] Independent review of the phase diff: 8 findings (1 high), all fixed with regression tests - ADR 0008
-- [ ] User adds Anthropic API key + billing cap, then one real run to confirm the request shape, grounding pass rate, latency and cost (blocked until then)
+- [ ] *(deferred by decision - project stays at $0)* a real run with an Anthropic key and a billing cap, to confirm the request shape, grounding pass rate, latency and cost. Not planned until the user lifts the no-cost rule.
 
 *Acceptance:*
 - *briefings pass schema validation* — **MET** (Pydantic-validated structured output; invalid replies retried once, tested).

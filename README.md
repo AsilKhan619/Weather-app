@@ -6,7 +6,7 @@ Nimbus is a streaming data platform that collects forecasts from three global we
 
 Everything is free and self-hosted: the three data sources are free, keyless APIs and every service runs locally in Docker. Grounded LLM briefings are built and tested; an AI agent is planned. The platform runs without an Anthropic API key (`LLM_ENABLED=false` is the default) - the only component that can ever cost money is the optional Claude API, and it stays off until you add a key.
 
-> **Status:** Phases 0-4 are implemented and were run against the live providers: ingestion, silver, backfill and replay, the gold layer and data quality, the anomaly detector and dashboard v1. Phase 5 (grounded LLM briefings) is implemented and tested with a deterministic fake client; **no call has been made to the real Claude API yet** (no key). The agent (Phase 6), orchestration (Phase 7) and polish (Phase 8) are not started. Progress: [`docs/PLAN.md`](docs/PLAN.md). Want to show it to someone? [`docs/demo.md`](docs/demo.md) is a 5-minute script.
+> **Status:** Phases 0-4 are implemented and were run against the live providers: ingestion, silver, backfill and replay, the gold layer and data quality, the anomaly detector and dashboard v1. Phase 5 (grounded LLM briefings) is implemented and tested with a deterministic fake client; **no call has been made to the real Claude API** - the project deliberately runs at $0, so the LLM stays off. The agent (Phase 6), orchestration (Phase 7) and polish (Phase 8) are not started. Progress: [`docs/PLAN.md`](docs/PLAN.md). Want to show it to someone? [`docs/demo.md`](docs/demo.md) is a 5-minute script.
 
 ## What it found on real data
 
@@ -154,7 +154,7 @@ Python 3.12+, full type hints, ruff and mypy in strict mode, pre-commit hooks, C
 - **A full-history gold build is extrapolated, not measured** (about 15 s per day suggests roughly four hours for ~1,000 days). The full `make backfill` has not been run.
 - **The dashboard has been rendered headlessly - including on the real data - but not reviewed in a browser**, and has no screenshots yet.
 - **Quarantine is per message**, so one bad value drops that report's other valid variables (3 of 27,102 messages in the 30-day run).
-- **LLM briefings have not run against the real API** - only against a deterministic fake client and stubbed SDK replies, because no API key has been added. The grounding check catches invented numbers, not numbers used for the wrong thing, and misses numbers written as words.
+- **LLM briefings have not run against the real API** - only against a deterministic fake client and stubbed SDK replies, because the project is kept at $0 by choice. The grounding check catches invented numbers, not numbers used for the wrong thing, and misses numbers written as words.
 - Single-broker Kafka and a single Postgres: a laptop-scale design. At 1000x scale this would move to Flink or Kafka Streams, Spark, Iceberg, Schema Registry, managed Kafka and a cloud warehouse.
 
 ## Data sources and attribution
