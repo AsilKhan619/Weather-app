@@ -14,7 +14,7 @@ from testcontainers.community.kafka import KafkaContainer
 from testcontainers.community.postgres import PostgresContainer
 
 from nimbus.common.kafka import ensure_topics
-from nimbus.common.settings import Settings
+from nimbus.common.settings import Settings, get_settings
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -122,3 +122,26 @@ def pg_settings() -> Iterator[Settings]:
             postgres_user=pg.username,
             postgres_password=pg.password,
         )
+
+
+@pytest.fixture
+def app_env(pg_settings: Settings, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Point the dashboard at the test database (and at a Kafka that is not there)."""
+    import streamlit as st  # the dashboard extra; only the page tests need it
+
+    for key, value in {
+        "POSTGRES_HOST": pg_settings.postgres_host,
+        "POSTGRES_PORT": str(pg_settings.postgres_port),
+        "POSTGRES_DB": pg_settings.postgres_db,
+        "POSTGRES_USER": pg_settings.postgres_user,
+        "POSTGRES_PASSWORD": pg_settings.postgres_password,
+        "KAFKA_BOOTSTRAP_SERVERS": "127.0.0.1:1",
+    }.items():
+        monkeypatch.setenv(key, value)
+    get_settings.cache_clear()
+    st.cache_resource.clear()
+    st.cache_data.clear()
+    yield
+    get_settings.cache_clear()
+    st.cache_resource.clear()
+    st.cache_data.clear()

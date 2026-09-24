@@ -1,6 +1,7 @@
 """Nimbus dashboard (brief section 12): Pipeline Health, Forecast vs Actual, Accuracy,
-Lineage, Briefings and LLM Usage. Run with `make dashboard`. Every page reads Postgres
-(and, for health, Kafka) through `nimbus.dashboard` and is read-only."""
+Lineage, Briefings, LLM Usage, Ask Nimbus and Replay Proposals. Run with `make dashboard`.
+Every page reads Postgres (and, for health, Kafka) through `nimbus.dashboard`; the only write
+is a person's decision on a replay proposal."""
 
 import streamlit as st
 
@@ -20,6 +21,9 @@ navigation = st.navigation(
                 url_path="briefings"),
         st.Page("views/llm_usage.py", title="LLM Usage", icon=":material/payments:",
                 url_path="llm-usage"),
+        st.Page("views/ask.py", title="Ask Nimbus", icon=":material/forum:", url_path="ask"),
+        st.Page("views/replays.py", title="Replay Proposals", icon=":material/replay:",
+                url_path="replay-proposals"),
     ]
 )  # fmt: skip
 st.sidebar.caption(

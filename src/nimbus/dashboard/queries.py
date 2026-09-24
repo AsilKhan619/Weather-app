@@ -316,3 +316,41 @@ def recent_llm_calls(engine: Engine, limit: int = 50) -> pd.DataFrame:
         "FROM ops.llm_calls ORDER BY id DESC LIMIT :n",
         {"n": limit},
     )
+
+
+# --- the agent (Phase 6) ------------------------------------------------------------------
+
+
+def agent_sessions(engine: Engine, limit: int = 50) -> pd.DataFrame:
+    """Recent agent sessions, newest first, with their tool trace (a list of steps)."""
+    return _read(
+        engine,
+        "SELECT session_id, started_at, purpose, question, answer, stop_reason, model, "
+        "prompt_version, iterations, tool_calls, input_tokens, output_tokens, cost_usd, "
+        "latency_ms, trace FROM ops.agent_sessions ORDER BY started_at DESC LIMIT :n",
+        {"n": limit},
+    )
+
+
+def agent_session_counts(engine: Engine, days: int = 7) -> pd.DataFrame:
+    return _read(
+        engine,
+        "SELECT count(*) AS sessions, "
+        "count(*) FILTER (WHERE stop_reason = 'answered') AS answered, "
+        "coalesce(sum(tool_calls), 0) AS tool_calls, coalesce(sum(cost_usd), 0) AS cost_usd "
+        "FROM ops.agent_sessions WHERE started_at >= now() - make_interval(days => :d)",
+        {"d": days},
+    )
+
+
+def replay_proposals(engine: Engine, status: str, limit: int = 100) -> pd.DataFrame:
+    """Proposals with one status, with the question of the session that filed them."""
+    return _read(
+        engine,
+        "SELECT p.id, p.proposed_at, p.proposed_by, p.consumer_group, p.topic, p.from_time, "
+        "p.reason, p.status, p.decided_at, p.decided_by, p.decision_note, p.session_id, "
+        "s.question, s.purpose FROM ops.replay_proposals p "
+        "LEFT JOIN ops.agent_sessions s USING (session_id) "
+        "WHERE p.status = :status ORDER BY p.proposed_at DESC, p.id DESC LIMIT :n",
+        {"status": status, "n": limit},
+    )

@@ -9,13 +9,12 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-import streamlit as st
 from sqlalchemy import Engine, text
 from streamlit.testing.v1 import AppTest
 
 from nimbus.common.config import GoldConfig, load_locations
 from nimbus.common.db import make_engine
-from nimbus.common.settings import Settings, get_settings
+from nimbus.common.settings import Settings
 from nimbus.dashboard import queries
 from nimbus.gold.build import build_gold
 from nimbus.jobs.load_dimensions import load_dimensions
@@ -44,7 +43,7 @@ def _clean(engine: Engine) -> None:
                 "TRUNCATE silver.forecast, silver.observation, gold.forecast_verification, "
                 "gold.accuracy_daily, gold.alert, ops.gold_build_log, ops.job_state, "
                 "ops.quality_results, ops.ingestion_runs, ops.reconciliation_results, "
-                "gold.briefing, ops.llm_calls"
+                "gold.briefing, ops.llm_calls, ops.agent_sessions, ops.replay_proposals"
             )
         )
 
@@ -104,27 +103,6 @@ def seeded(empty: Engine) -> Iterator[Engine]:
     build_gold(empty, config=CONFIG)
     yield empty
     _clean(empty)
-
-
-@pytest.fixture
-def app_env(pg_settings: Settings, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Point the dashboard at the test database (and at a Kafka that is not there)."""
-    for key, value in {
-        "POSTGRES_HOST": pg_settings.postgres_host,
-        "POSTGRES_PORT": str(pg_settings.postgres_port),
-        "POSTGRES_DB": pg_settings.postgres_db,
-        "POSTGRES_USER": pg_settings.postgres_user,
-        "POSTGRES_PASSWORD": pg_settings.postgres_password,
-        "KAFKA_BOOTSTRAP_SERVERS": "127.0.0.1:1",
-    }.items():
-        monkeypatch.setenv(key, value)
-    get_settings.cache_clear()
-    st.cache_resource.clear()
-    st.cache_data.clear()
-    yield
-    get_settings.cache_clear()
-    st.cache_resource.clear()
-    st.cache_data.clear()
 
 
 # --- the query layer ------------------------------------------------------------------------
@@ -232,6 +210,8 @@ PAGES = [
     "views/lineage.py",
     "views/briefings.py",
     "views/llm_usage.py",
+    "views/ask.py",
+    "views/replays.py",
 ]
 
 

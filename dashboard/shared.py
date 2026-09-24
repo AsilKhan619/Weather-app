@@ -22,6 +22,12 @@ def engine() -> Engine:
     return make_engine(get_settings())
 
 
+@st.cache_resource
+def readonly_engine() -> Engine:
+    """The agent's engine: the read-only role (migration 0011)."""
+    return make_engine(get_settings(), readonly=True)
+
+
 @st.cache_data(ttl=TTL_SECONDS, show_spinner=False)
 def query(name: str, *args: Any) -> Any:
     """`queries.<name>(engine, *args)`; args must be hashable (str, int, date)."""
