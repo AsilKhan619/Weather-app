@@ -382,7 +382,50 @@ docker exec nimbus-postgres psql -U nimbus -d nimbus -c \
 - **Costs look high:** check the cache hit rate on the LLM Usage page. The fact sheet is taken as of
   the top of the hour, so repeated runs within an hour should all be cache hits.
 
-## 15. Provider attribution
+## 15. The agent: eval, sessions and replay proposals
+
+The agent needs a language model, so **asking it is off** (`LLM_ENABLED=false`, the $0 decision);
+`make ask Q="..."` says so and exits. Everything else works without one.
+
+```bash
+make eval                                   # every question in evals/agent_questions.yaml
+uv run python -m nimbus.jobs.run_eval --only q07_station_without_recent_data --no-save
+```
+
+`make eval` needs loaded data (`make demo`). It prints PASS/FAIL/SKIP per question with the reason
+for each failure, then accuracy, tool calls, tokens, cost and latency; it writes
+`evals/results/eval-<time>.json` and appends a line to `evals/results/history.jsonl`. It exits 1
+under 80%, or when nothing could be graded (an empty database).
+
+- **SKIP:** the reference query found no data - e.g. no alerts on a backfill-only load (backfilled
+  rows never alert). Not a failure; it counts neither way.
+- **FAIL on a number or a model name:** first check the data, not the agent - run the question's
+  `reference_sql` and the baseline's SQL by hand. They take different routes (raw per-forecast
+  errors vs daily aggregates); disagreement means `gold.accuracy_daily` is out of step with
+  `gold.forecast_verification`: `make gold ARGS=--full`.
+- **`no answer: max_iterations` / `token_budget`:** the session hit its cap (`config/llm.yaml`,
+  `agent:`). With the scripted baseline this means a plan and its template disagree.
+- **A tool fails with "query rejected":** the SQL guard refused it (the message says why). With
+  "query failed", Postgres did - often the 5 s statement timeout; aggregate in SQL instead.
+- **Adding a question:** reference SQL (which must return one row), `expect` checks, and a
+  `baseline` plan. A unit test checks every plan against the real tool schemas and the SQL guard,
+  and the integration suite runs the whole file on seeded data.
+
+Sessions (every `make eval` question, and any question asked) are in `ops.agent_sessions` with
+their tool trace; the dashboard's **Ask Nimbus** page shows them, SQL included.
+
+**Replay proposals.** The agent can only file one; nothing happens until a person decides. On
+the dashboard's **Replay Proposals** page, read the reason, check it against Pipeline Health, type
+your name and approve or reject. Approving **runs nothing** - it records the decision and shows the
+command. To carry it out: stop the consumer, run the command, restart it, `make reconcile`
+(section 3). Proposals filed by `make eval` are rejected automatically by the grader
+(`decided_by = 'make eval'`) so they never wait in the queue.
+
+The agent's database login is `nimbus_ro` (migration 0011): read-only, SELECT on `silver`, `gold`
+and `ops` only, 10 s statement timeout. If `run_sql` fails with an authentication error, check
+`POSTGRES_READONLY_PASSWORD` matches the one the migration created the role with.
+
+## 16. Provider attribution
 
 Forecast data is from [Open-Meteo](https://open-meteo.com/) (CC BY 4.0;
 non-commercial use). Historical observations are from the Iowa Environmental

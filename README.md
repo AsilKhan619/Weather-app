@@ -4,9 +4,9 @@
 
 Nimbus is a streaming data platform that collects forecasts from three global weather models and real observations from airport weather stations, scores every forecast against what actually happened, and ranks the models by location, variable and lead time. It is built on Kafka, Python, pandas and Postgres, with data-quality gates, lineage tracing, streaming anomaly alerts and a Streamlit dashboard.
 
-Everything is free and self-hosted: the three data sources are free, keyless APIs and every service runs locally in Docker. Grounded LLM briefings are built and tested; an AI agent is planned. The platform runs without an Anthropic API key (`LLM_ENABLED=false` is the default) - the only component that can ever cost money is the optional Claude API, and it stays off until you add a key.
+Everything is free and self-hosted: the three data sources are free, keyless APIs and every service runs locally in Docker. Grounded LLM briefings and a tool-using AI agent ("Ask Nimbus") are built and tested. The platform runs without an Anthropic API key (`LLM_ENABLED=false` is the default) - the only component that can ever cost money is the optional Claude API, and it stays off until you add a key.
 
-> **Status:** Phases 0-4 are implemented and were run against the live providers: ingestion, silver, backfill and replay, the gold layer and data quality, the anomaly detector and dashboard v1. Phase 5 (grounded LLM briefings) is implemented and tested with a deterministic fake client; **no call has been made to the real Claude API** - the project deliberately runs at $0, so the LLM stays off. The agent (Phase 6), orchestration (Phase 7) and polish (Phase 8) are not started. Progress: [`docs/PLAN.md`](docs/PLAN.md). Want to show it to someone? [`docs/demo.md`](docs/demo.md) is a 5-minute script.
+> **Status:** Phases 0-4 are implemented and were run against the live providers: ingestion, silver, backfill and replay, the gold layer and data quality, the anomaly detector and dashboard v1. Phase 5 (grounded LLM briefings) and Phase 6 (the Ask Nimbus agent and its eval) are implemented and tested with deterministic stand-ins for the model; **no call has been made to the real Claude API** - the project deliberately runs at $0, so the LLM stays off. Orchestration (Phase 7) and polish (Phase 8) are not started. Progress: [`docs/PLAN.md`](docs/PLAN.md). Want to show it to someone? [`docs/demo.md`](docs/demo.md) is a 5-minute script.
 
 ## What it found on real data
 
@@ -61,6 +61,10 @@ flowchart TB
     PG_ALERT --> DASH
     PG_SILVER --> DASH
     LAKE -.->|lineage| DASH
+
+    DASH <--> AGENT["Ask Nimbus agent<br/>(tools, SQL guard)"]
+    AGENT -->|read-only role| PG_GOLD
+    AGENT -->|proposals only| PROPOSALS[("ops.replay_proposals<br/>(a person approves)")]
 ```
 
 The Parquet lake is the source of truth for replay: silver can be rebuilt from it, and `make reconcile` proves silver equals such a rebuild. Design rationale for each stage is in [`docs/decisions/`](docs/decisions/).
@@ -71,7 +75,7 @@ Prerequisites: [Docker Desktop](https://www.docker.com/products/docker-desktop/)
 
 ```bash
 cp .env.example .env
-uv sync --extra ingestion --extra dashboard   # Python dependencies
+uv sync --extra ingestion --extra dashboard --extra sql   # Python dependencies
 make up          # Kafka (KRaft), Kafbat UI (localhost:8080), Postgres; runs migrations, creates topics
 make demo        # last 30 days for 25 locations -> bronze, silver, reconcile, gold, quality checks
 make dashboard   # http://localhost:8501
@@ -102,6 +106,8 @@ make partitions              # create upcoming monthly partitions; apply retenti
 make dashboard               # Streamlit dashboard
 make briefings               # daily LLM briefings (off unless LLM_ENABLED=true; ARGS=--dry-run prints fact sheets)
 make briefing-consumer       # a briefing when an alert arrives
+make eval                    # the agent eval (scripted baseline, no LLM, $0)
+make ask Q="..."             # ask the agent (off unless LLM_ENABLED=true)
 make replay ARGS=...         # rebuild silver from the lake, or reset a consumer group
 make produce-forecasts       # live producers (ARGS=--once for a single cycle)
 make produce-observations
@@ -127,7 +133,9 @@ Operational procedures (crashed consumer, rebuilding from bronze, the DLQ, rate 
 
 **Briefings.** Code builds a fact sheet per location - each model's next-48-hour outlook, how much the models disagree, their recent accuracy there, active alerts, and a confidence level decided from model agreement. Claude (Haiku 4.5) writes a short briefing from that sheet alone as validated structured output, retried once if invalid. An automatic grounding check then requires every number to appear in, or round from, the fact sheet; a briefing that fails is stored flagged and never published. Identical fact sheets never pay twice (cached by hash), and every call is logged with tokens, latency and estimated cost ([ADR 0008](docs/decisions/0008-phase5-grounded-briefings.md)).
 
-**Dashboard.** Six pages: Pipeline Health (throughput, consumer lag, dead letters, freshness, quality, reconciliation, alerts), Forecast vs Actual, Accuracy (leaderboard, error vs lead time, best model by location), Lineage, Briefings and LLM Usage. Pages are thin; the logic lives in a tested query layer ([ADR 0007](docs/decisions/0007-phase4-dashboard.md)).
+**Ask Nimbus.** A tool-using agent written directly on the Claude Messages API (no framework): it can describe the data (a semantic layer of tables, units, joins and metric definitions), run SQL, rank models, check pipeline health, sample dead letters and propose a replay. SQL is checked three ways - a sqlglot guard that walks the whole query tree, a read-only Postgres role, and a per-statement timeout and row cap - and a replay is only ever a proposal that a person approves on the dashboard. Every session is stored with its full tool trace. A 21-question eval grades answers against reference SQL computed at eval time. Because no paid model is called, `make eval` scores a deterministic scripted baseline: it proves the tools, data and grader, not a model's reasoning ([ADR 0009](docs/decisions/0009-phase6-ask-nimbus-agent.md)).
+
+**Dashboard.** Eight pages: Pipeline Health (throughput, consumer lag, dead letters, freshness, quality, reconciliation, alerts), Forecast vs Actual, Accuracy (leaderboard, error vs lead time, best model by location), Lineage, Briefings, LLM Usage, Ask Nimbus (sessions and their tool traces) and Replay Proposals. Pages are thin; the logic lives in a tested query layer ([ADR 0007](docs/decisions/0007-phase4-dashboard.md)).
 
 ## Design decisions
 
@@ -140,6 +148,8 @@ Operational procedures (crashed consumer, rebuilding from bronze, the DLQ, rate 
 | Monthly partitions on `valid_time`, retention off by default | Gold and retention both work a date at a time; the demo dataset is the full history | [0005](docs/decisions/0005-phase3-gold-quality-lineage.md) |
 | Stateless detector reading silver | A restart loses nothing; no changelog to maintain at this scale | [0006](docs/decisions/0006-phase4-anomaly-detector.md) |
 | LLM sees only a code-built fact sheet; numbers checked after | An LLM that computes nothing can be checked; confidence is decided by code, explained by the model | [0008](docs/decisions/0008-phase5-grounded-briefings.md) |
+| Agent SQL: parser guard *and* a read-only role | The guard is a denylist and gives good error messages; the role is the actual boundary | [0009](docs/decisions/0009-phase6-ask-nimbus-agent.md) |
+| Eval answers from reference SQL at eval time | Stored answers go stale; values with tolerances need no LLM judge | [0009](docs/decisions/0009-phase6-ask-nimbus-agent.md) |
 
 ## Engineering standards
 
@@ -155,6 +165,7 @@ Python 3.12+, full type hints, ruff and mypy in strict mode, pre-commit hooks, C
 - **The dashboard has been rendered headlessly - including on the real data - but not reviewed in a browser**, and has no screenshots yet.
 - **Quarantine is per message**, so one bad value drops that report's other valid variables (3 of 27,102 messages in the 30-day run).
 - **LLM briefings have not run against the real API** - only against a deterministic fake client and stubbed SDK replies, because the project is kept at $0 by choice. The grounding check catches invented numbers, not numbers used for the wrong thing, and misses numbers written as words.
+- **The agent has never been driven by a real model**, for the same reason. The eval's score is a scripted baseline's: tool choice, model-written SQL and answer quality are unmeasured.
 - Single-broker Kafka and a single Postgres: a laptop-scale design. At 1000x scale this would move to Flink or Kafka Streams, Spark, Iceberg, Schema Registry, managed Kafka and a cloud warehouse.
 
 ## Data sources and attribution

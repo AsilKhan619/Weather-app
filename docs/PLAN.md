@@ -128,12 +128,27 @@ Design: [ADR 0008](decisions/0008-phase5-grounded-briefings.md). Built and teste
 
 ## Phase 6 — AI agent
 
-- [ ] Agent loop on the raw Anthropic SDK, tools, `semantic_layer.yaml`
-- [ ] Read-only Postgres role, `run_sql` via sqlglot SELECT-only enforcement
-- [ ] `evals/agent_questions.yaml`, `make eval`
-- [ ] Dashboard: Ask Nimbus, Replay Proposals pages
+Design: [ADR 0009](decisions/0009-phase6-ask-nimbus-agent.md). Split in two: 6a (role, guard, semantic layer, tools, loop, sessions) and 6b (eval, pages). Built and tested with a deterministic scripted client; **no real model has been called** (the project runs at $0).
 
-*Acceptance: `make eval` ≥ 80%; non-SELECT SQL rejected; tool trace shown; replay proposals need human approval.*
+**6a — the agent**
+- [x] Agent loop on the raw Messages API (no framework, no Tool Runner): 8-turn cap, 60k-token budget, typed SDK errors, every session stored in `ops.agent_sessions` with its tool trace
+- [x] Six tools with strict schemas: `describe_data`, `run_sql`, `get_leaderboard`, `get_pipeline_health`, `sample_dlq`, `propose_replay`
+- [x] `config/semantic_layer.yaml`: tables, columns and units, joins, metric definitions, example queries (every example executed by an integration test)
+- [x] SQL in three layers: sqlglot guard (whole-tree walk, schema allow-list, function denylist, comment-free regeneration), `nimbus_ro` read-only role (migration 0011), per-statement timeout and row cap
+- [x] Untrusted tool output cleaned and bounded; versioned system prompt (`agent_v1`); `make ask` (off while `LLM_ENABLED=false`)
+
+**6b — eval and pages**
+- [x] `evals/agent_questions.yaml`: 21 questions (the brief's 4 included), reference SQL at eval time, value grading with tolerances, questions that pick their subject from the data, skip when there is no data
+- [x] `make eval`: accuracy, tool calls, tokens, cost, latency; results in `evals/results/` (history tracked); run on real data by the live-demo workflow
+- [x] Dashboard: Ask Nimbus (sessions with the full tool trace and SQL) and Replay Proposals (approve/reject pending proposals; shows the runbook command, runs nothing)
+- [ ] `make eval` on real provider data (live-demo workflow) - pending the next run
+- [ ] *(deferred by decision - project stays at $0)* the eval with a real model, to measure tool choice, model-written SQL, cost and latency
+
+*Acceptance:*
+- *`make eval` ≥ 80%* — **MET for the scripted baseline** (21/21 on seeded data); it measures the tools, data and grader, not a model's planning (ADR 0009). A real model's score is unmeasured by decision.
+- *non-SELECT SQL rejected* — **MET** (`test_anything_but_a_read_only_select_is_rejected`, 23 cases incl. a `DELETE` inside a CTE; and the role refuses writes even without the guard).
+- *tool trace shown* — **MET** (Ask Nimbus page: each call's input, the SQL that ran, an output excerpt; tested headlessly).
+- *replay proposals need human approval* — **MET** (the agent can only insert a pending row; a person decides on the page, once; approving runs nothing; tested).
 
 ## Phase 7 — Orchestration and hardening
 

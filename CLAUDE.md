@@ -32,7 +32,8 @@ make test             # unit tests (no external services required)
 make test-integration # Testcontainers-based integration tests (needs Docker)
 make lint             # ruff check
 make typecheck        # mypy
-make eval             # AI agent eval suite (evals/agent_questions.yaml)
+make eval             # agent eval (evals/agent_questions.yaml): scripted baseline, needs loaded data
+make ask Q="..."      # ask the agent; prints that it is off while LLM_ENABLED=false
 make trace EVENT_ID=  # trace one event bronze -> silver -> gold (or SAMPLE=forecast|observation)
 make replay ARGS=...  # `bronze --topic T --truncate` or `offsets --group G --topic T` (docs/runbook.md)
 ```
@@ -102,3 +103,14 @@ Run `uv sync` once after cloning to install dependencies (uv manages the virtual
 - **Prompts are versioned files; never edit a published one.** Add `briefing_vN.md` and bump `prompt_version` in `config/llm.yaml` - the version is part of the cache key.
 - **No real API call has been made** (no key). Tests use `FakeBriefingClient` and stubbed `messages.create`; the unit tests import `anthropic`, so CI installs `--extra llm`. Model ids come from settings (`claude-haiku-4-5` alias, no date suffix).
 - **Haiku 4.5's minimum cacheable prompt prefix is 4,096 tokens;** the briefing system prompt is ~450, so API prompt caching is deliberately not used - the fact-sheet-hash cache is what saves money.
+
+## Gotchas (Phase 6)
+
+- **The agent's SQL safety is three layers; keep all three.** The sqlglot guard (`nimbus.agent.sql_guard`) is a denylist that gives the model good error messages; the `nimbus_ro` role (migration 0011) is the real boundary; `SET LOCAL statement_timeout` + `fetchmany(limit+1)` bound each query. sqlglot types a table-valued function in `FROM` (`generate_series`) as a table, so the schema allow-list rejects it - timeout tests use a self cross join instead.
+- **Tool output over `tool_output_chars` reaches the model cut.** `describe_data` once exceeded the cap by 7 characters; `test_the_whole_semantic_layer_reaches_the_model_uncut` guards it. Grow the semantic layer, check the test.
+- **`make eval` scores a scripted baseline, not a model** (the $0 rule). Don't describe its number as the agent's accuracy; say what ADR 0009 says. Eval reference SQL runs on the main engine (the read-only role has a 10 s timeout); a question with no reference row is skipped, not failed. The replay question files a real proposal, which the grader rejects as `make eval`.
+- **Timestamps shown to the model or a person must be converted to UTC first.** The embedded Postgres used locally runs in the machine's time zone, so tz-aware values come back with a local offset: `strftime` on them without `astimezone(UTC)` produced a wrong replay command until a test caught it.
+- **Pages must call patchable functions through their module** (`agent_llm.client_from_settings(...)`), so AppTest tests can swap in the scripted client with `monkeypatch`. `client_from_settings` is the only place a real client may be built, and returns `None` while `LLM_ENABLED=false`.
+- **Integration modules share one Postgres** (and the local embedded one persists between runs): never assert on a table's absolute contents that another module fills; truncate what the test owns.
+- **pre-commit's mypy checks the whole tree, including untracked files.** When committing in chunks, `git stash push -u -- <later files>` first, or the hook fails on files that depend on unstaged changes.
+- `app_env` (point the dashboard at the test database) now lives in `tests/integration/conftest.py`.

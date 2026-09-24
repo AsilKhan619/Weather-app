@@ -102,8 +102,8 @@ make trace SAMPLE=forecast
 
 > "So: streaming ingestion, a replayable raw layer, a quality gate, an incremental scoring job that
 > is safe to re-run - I checksummed both tables before and after a re-run on real data and they were
-> identical - and a dashboard on top. Next are LLM-written briefings and an agent that can answer
-> questions, both grounded in these tables."
+> identical - and a dashboard on top. On top of that sit LLM-written briefings and an agent that
+> answers questions from these tables, both built and tested without calling a paid model."
 
 ---
 
@@ -117,6 +117,8 @@ make trace SAMPLE=forecast
 | Why did pressure alerts disappear at Bogota and Mexico City? | The first real run alerted mostly there. Those stations don't report sea-level pressure, so I'd substituted the altimeter setting, which is wrong at altitude. I stopped doing that and the detector now ignores pressure above 300 m. |
 | What are the weak spots? | One month of ranking isn't a verdict; thresholds for alerts are untuned; a full-history scoring build is extrapolated (~4 h), not measured; the dashboard hasn't been reviewed in a browser. See the README's Limitations. |
 | Cost? | Free. The only optional paid piece is an LLM key, off by default. |
+| Can the AI agent break the database? | It never gets a writable connection: its SQL is parsed and must be a single read-only SELECT, then runs as a Postgres role that can only read, with a timeout and a row cap. Its only write is a replay *proposal* that a person approves on the Replay Proposals page - and approving shows a command, it runs nothing. Open **Ask Nimbus** to show a session's tool calls and SQL. |
+| How good is the agent? | Unmeasured on a real model - the project runs at $0. `make eval` passes 21/21 with a scripted stand-in, which proves the tools, data and grading, not a model's reasoning. Say exactly that. |
 
 ## Keeping it honest
 
